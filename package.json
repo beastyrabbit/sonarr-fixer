@@ -1,0 +1,44 @@
+{
+	"name": "sonarr-fixer",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Power-user Sonarr import queue fixer powered by Pi.",
+	"main": "out/main/index.js",
+	"scripts": {
+		"dev": "electron-vite dev",
+		"build": "electron-vite build",
+		"start": "pnpm build && electron .",
+		"run:built": "pnpm build && electron .",
+		"prepare": "lefthook install",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome format --write .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"secrets:scan": "gitleaks git --redact --verbose",
+		"secrets:scan:staged": "gitleaks git --staged --pre-commit --redact --verbose"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "^0.75.3",
+		"@earendil-works/pi-coding-agent": "^0.75.3",
+		"lucide-react": "^1.16.0",
+		"react": "^19.2.6",
+		"react-dom": "^19.2.6",
+		"typebox": "^1.1.38",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.15",
+		"@types/node": "^25.9.0",
+		"@types/react": "^19.2.14",
+		"@types/react-dom": "^19.2.3",
+		"@vitejs/plugin-react": "^5.2.0",
+		"electron": "^42.1.0",
+		"electron-vite": "^5.0.0",
+		"lefthook": "^2.1.8",
+		"typescript": "^5.9.3",
+		"vite": "^7.3.3",
+		"vitest": "^4.1.6"
+	}
+}
