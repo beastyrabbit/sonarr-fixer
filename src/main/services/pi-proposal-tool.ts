@@ -74,6 +74,28 @@ export function createProposalTool(candidateIds: string[], capture: ProposalCapt
 				description: "Candidates believed to be samples.",
 				maxItems: candidateIds.length,
 			}),
+			queueRemovalOptions: Type.Optional(
+				Type.Object(
+					{
+						removeFromClient: Type.Boolean({
+							description: "Delete/remove this release from the download client.",
+						}),
+						blocklist: Type.Boolean({
+							description: "Blocklist this exact release so Sonarr searches for a different one.",
+						}),
+						skipRedownload: Type.Boolean({
+							description: "When false, Sonarr may search/redownload a replacement.",
+						}),
+						changeCategory: Type.Boolean({
+							description: "Ask Sonarr to change the download category instead of deleting it.",
+						}),
+					},
+					{
+						description:
+							"Only for remove_queue_item. For ordinary non-upgrades where the existing episode file is already better, use removeFromClient=true, blocklist=false, skipRedownload=false, changeCategory=false. For unsuitable releases such as non-German files, wrong episodes, or unusable folders, use removeFromClient=true, blocklist=true, skipRedownload=false, changeCategory=false.",
+					},
+				),
+			),
 			reason: Type.String({
 				minLength: 1,
 				description: "Short reason for the proposal.",

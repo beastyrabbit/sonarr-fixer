@@ -5,25 +5,31 @@ It loads warning-state queue entries, asks Pi to inspect Sonarr's manual import 
 you review and apply a typed import proposal.
 
 This is meant for power users who already understand Sonarr manual imports. It can start Sonarr
-`ManualImport` commands and can remove queue items when you explicitly choose that action.
+`ManualImport` commands and can remove queue items either explicitly or through narrow local rules.
 
 ## What It Does
 
 - Lists Sonarr queue items that are completed but blocked by import warnings.
 - Loads Sonarr manual import candidates for a selected download.
 - Uses Pi with read-only Sonarr lookup tools to propose a resolution.
+- Lets Pi inspect current episode files, quality profiles, and custom format scores before deciding non-upgrade/custom-format warnings.
 - Maps chosen files to exact Sonarr episode IDs instead of trusting Sonarr's first parse.
+- Instructs Pi that imported files must include German; unsuitable non-German releases should be removed, blocklisted, and left for Sonarr to search again.
+- Instructs Pi to plain-remove ordinary non-upgrades when the existing episode file is already better, without blocklisting the release.
 - Flags likely samples and blocks sample imports through local validation.
 - Applies valid import proposals through Sonarr's API after review.
-- Supports bulk analysis with optional auto-import above a configurable confidence threshold.
+- Instructs Pi to never import Blu-ray disc structure chunks (`BDMV/STREAM/*.m2ts`) and to remove/blocklist such downloads.
+- Flags completed downloads with no manual import candidates for review so they can be removed and re-searched.
+- Supports bulk analysis with optional auto-apply for safe imports.
 
 ## Safety Model
 
 - Pi receives structured queue and candidate data, not unrestricted Sonarr access.
 - Pi can use read-only Sonarr lookup tools during analysis.
 - Pi must return one typed `propose_sonarr_resolution` result.
+- Pi can return queue removal options for delete/blocklist/search or plain removal decisions.
 - The app validates the proposal locally before importing.
-- Queue removal is never automatic. It only happens when you click the remove action.
+- Pi-suggested queue removal can auto-apply only when the proposal is valid, includes explicit removal options, and has at least 95% confidence.
 - Auto-import only applies `import_candidates` proposals that pass validation and meet the configured confidence threshold.
 
 ## Requirements
@@ -90,16 +96,16 @@ pnpm start
 Inside the app:
 
 1. Open `Config`, enter the Sonarr URL and API key, and choose a Pi model.
-2. Run `Doctor` to verify Sonarr and Pi auth.
-3. Load the queue.
-4. Select a queue item and run analysis.
-5. Review the proposal, validation result, selected candidate, and episode mapping.
+2. Let the queue auto-load, or use `Refresh` to reload it manually.
+3. Select a queue item and run analysis, or use `Analyze all` for every actionable row.
+4. Review the proposal, validation result, selected candidate, and episode mapping.
+5. Use `History` to inspect prior AI proposals and Sonarr actions.
 6. Apply the import only when the proposal matches what you expect.
 
 ## Configuration
 
 `AUTO_IMPORT_CONFIDENCE` sets the minimum Pi confidence required for auto-import. Use a value from
-`0` to `1`.
+`0` to `1`. Local deterministic delete/blocklist rules do not use this threshold.
 
 `AUTO_RESOLVE_PARALLELISM` controls how many queue items bulk auto-resolve may analyze at once. It
 is clamped from `1` to `10`. Lower values are safer if Pi sessions fail to return typed proposals

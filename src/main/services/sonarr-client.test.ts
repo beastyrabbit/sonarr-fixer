@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { QueueItem } from "../../shared/types.js";
 import { SonarrClient } from "./sonarr-client.js";
 
 const removalOptions = {
@@ -7,6 +8,27 @@ const removalOptions = {
 	skipRedownload: false,
 	changeCategory: false,
 };
+
+function jsonResponse(body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status: 200,
+		statusText: "OK",
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+function queueItem(overrides: Partial<QueueItem> = {}): QueueItem {
+	return {
+		id: 1,
+		title: "Queue item",
+		episodeIds: [],
+		absoluteEpisodeNumbers: [],
+		episodeLabels: [],
+		statusMessages: [],
+		canAnalyze: true,
+		...overrides,
+	};
+}
 
 describe("SonarrClient", () => {
 	afterEach(() => {
@@ -31,5 +53,197 @@ describe("SonarrClient", () => {
 				}),
 			}),
 		);
+	});
+
+	it("filters in-progress downloads out of the queue", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({
+				records: [
+					{
+						id: 1,
+						title: "Still downloading",
+						status: "downloading",
+						trackedDownloadStatus: "ok",
+						trackedDownloadState: "downloading",
+						downloadId: "download-1",
+						size: 100,
+						sizeleft: 50,
+					},
+					{
+						id: 2,
+						title: "Blocked import",
+						status: "completed",
+						trackedDownloadStatus: "warning",
+						trackedDownloadState: "importBlocked",
+						downloadId: "download-2",
+						size: 100,
+						sizeleft: 0,
+					},
+					{
+						id: 3,
+						title: "Warning but unfinished",
+						status: "warning",
+						trackedDownloadStatus: "warning",
+						trackedDownloadState: "downloading",
+						downloadId: "download-3",
+						size: 100,
+						sizeleft: 10,
+					},
+				],
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = new SonarrClient("http://sonarr.local/", "test-api-key");
+		const queue = await client.listQueue();
+
+		expect(queue).toHaveLength(1);
+		expect(queue[0]).toMatchObject({
+			id: 2,
+			canAnalyze: true,
+			isInProgress: false,
+		});
+	});
+
+	it("does not ask Sonarr for manual import candidates while a download is in progress", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = new SonarrClient("http://sonarr.local/", "test-api-key");
+		const candidates = await client.getManualImportCandidates(
+			queueItem({
+				downloadId: "download-1",
+				status: "downloading",
+				trackedDownloadStatus: "warning",
+				trackedDownloadState: "downloading",
+				isInProgress: true,
+			}),
+		);
+
+		expect(candidates).toEqual([]);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("loads manual import candidates for completed warning downloads", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse([
+				{
+					path: "/downloads/show/episode.mkv",
+					relativePath: "episode.mkv",
+					name: "episode",
+					size: 1_000_000_000,
+					series: { id: 12, title: "Show" },
+					episodes: [{ id: 34, seasonNumber: 1, episodeNumber: 2, title: "Episode" }],
+					quality: { quality: { name: "WEBRip-720p" } },
+					languages: [{ name: "English" }],
+					customFormats: [{ id: 311, name: "German" }],
+					customFormatScore: 100,
+					downloadId: "download-2",
+				},
+			]),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = new SonarrClient("http://sonarr.local/", "test-api-key");
+		const candidates = await client.getManualImportCandidates(
+			queueItem({
+				downloadId: "download-2",
+				status: "completed",
+				trackedDownloadStatus: "warning",
+				trackedDownloadState: "importBlocked",
+				isInProgress: false,
+			}),
+		);
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]).toMatchObject({
+			path: "/downloads/show/episode.mkv",
+			seriesId: 12,
+			episodeIds: [34],
+			customFormatLabels: ["German"],
+			customFormatScore: 100,
+		});
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://sonarr.local/api/v3/manualimport?downloadId=download-2&filterExistingFiles=false",
+			expect.any(Object),
+		);
+	});
+
+	it("falls back to folder manual import candidates when the downloadId query is empty", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (url.endsWith("/api/v3/manualimport?downloadId=download-2&filterExistingFiles=false")) {
+				return jsonResponse([]);
+			}
+			if (
+				url.endsWith(
+					"/api/v3/manualimport?folder=%2Fdownloads%2Fshow&downloadId=download-2&filterExistingFiles=false",
+				)
+			) {
+				return jsonResponse([
+					{
+						path: "/downloads/show/episode.mkv",
+						relativePath: "episode.mkv",
+						name: "episode",
+						series: { id: 12, title: "Show" },
+						episodes: [{ id: 34, seasonNumber: 1, episodeNumber: 2, title: "Episode" }],
+						quality: { quality: { name: "WEBRip-720p" } },
+						languages: [{ name: "English" }],
+						downloadId: "download-2",
+					},
+				]);
+			}
+			return new Response("not found", { status: 404, statusText: "Not Found" });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = new SonarrClient("http://sonarr.local/", "test-api-key");
+		const candidates = await client.getManualImportCandidates(
+			queueItem({
+				downloadId: "download-2",
+				outputPath: "/downloads/show",
+				status: "completed",
+				trackedDownloadStatus: "warning",
+				trackedDownloadState: "importBlocked",
+				isInProgress: false,
+			}),
+		);
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]).toMatchObject({
+			path: "/downloads/show/episode.mkv",
+			seriesId: 12,
+			episodeIds: [34],
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenNthCalledWith(
+			1,
+			"http://sonarr.local/api/v3/manualimport?downloadId=download-2&filterExistingFiles=false",
+			expect.any(Object),
+		);
+		expect(fetchMock).toHaveBeenNthCalledWith(
+			2,
+			"http://sonarr.local/api/v3/manualimport?folder=%2Fdownloads%2Fshow&downloadId=download-2&filterExistingFiles=false",
+			expect.any(Object),
+		);
+	});
+
+	it("loads quality profiles and custom formats for AI upgrade checks", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (url.endsWith("/api/v3/qualityprofile")) {
+				return jsonResponse([{ id: 1, name: "720p", minUpgradeFormatScore: 1 }]);
+			}
+			if (url.endsWith("/api/v3/customformat")) {
+				return jsonResponse([{ id: 311, name: "German" }]);
+			}
+			return new Response("not found", { status: 404, statusText: "Not Found" });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = new SonarrClient("http://sonarr.local/", "test-api-key");
+
+		await expect(client.getQualityProfiles()).resolves.toEqual([
+			{ id: 1, name: "720p", minUpgradeFormatScore: 1 },
+		]);
+		await expect(client.getCustomFormats()).resolves.toEqual([{ id: 311, name: "German" }]);
 	});
 });

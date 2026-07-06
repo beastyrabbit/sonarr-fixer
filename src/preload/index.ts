@@ -3,7 +3,6 @@ import type {
 	AnalysisResult,
 	ApplyImportInput,
 	ApplyResult,
-	DoctorResult,
 	ManualImportCandidate,
 	PublicConfig,
 	QueueItem,
@@ -15,7 +14,6 @@ import type {
 const api = {
 	getConfig: (): Promise<PublicConfig> => ipcRenderer.invoke("config:get"),
 	saveConfig: (input: SaveConfigInput): Promise<PublicConfig> => ipcRenderer.invoke("config:save", input),
-	doctor: (): Promise<DoctorResult> => ipcRenderer.invoke("doctor:run"),
 	listQueue: (): Promise<QueueItem[]> => ipcRenderer.invoke("queue:list"),
 	getManualImportCandidates: (queueItem: QueueItem): Promise<ManualImportCandidate[]> =>
 		ipcRenderer.invoke("manual-import:list", queueItem),
@@ -25,7 +23,7 @@ const api = {
 		ipcRenderer.invoke("proposal:apply-import", input),
 	removeQueueItem: (queueItemId: number, options: QueueRemovalOptions): Promise<ApplyResult> =>
 		ipcRenderer.invoke("queue:remove", queueItemId, options),
-	cancelRun: (): Promise<void> => ipcRenderer.invoke("resolver:cancel"),
+	cancelRun: (itemId?: number): Promise<void> => ipcRenderer.invoke("resolver:cancel", itemId),
 	onResolverEvent: (callback: (event: ResolverEvent) => void): (() => void) => {
 		const listener = (_event: Electron.IpcRendererEvent, payload: ResolverEvent) => callback(payload);
 		ipcRenderer.on("resolver:event", listener);

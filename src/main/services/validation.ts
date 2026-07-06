@@ -2,6 +2,7 @@ import type {
 	ManualImportCandidate,
 	ProposalAction,
 	QueueItem,
+	QueueRemovalOptions,
 	ResolutionProposal,
 	SelectedImport,
 	ValidationIssue,
@@ -73,6 +74,19 @@ function normalizeSelectedImports(values: unknown): SelectedImport[] {
 	return imports;
 }
 
+function normalizeQueueRemovalOptions(value: unknown): QueueRemovalOptions | undefined {
+	if (!value || typeof value !== "object") {
+		return undefined;
+	}
+	const record = value as Partial<QueueRemovalOptions>;
+	return {
+		removeFromClient: Boolean(record.removeFromClient),
+		blocklist: Boolean(record.blocklist),
+		skipRedownload: Boolean(record.skipRedownload),
+		changeCategory: Boolean(record.changeCategory),
+	};
+}
+
 export function normalizeProposal(input: ResolutionProposal): ResolutionProposal {
 	const selectedImports = normalizeSelectedImports(input.selectedImports);
 	const selectedCandidateIds = normalizeIdList([
@@ -95,6 +109,7 @@ export function normalizeProposal(input: ResolutionProposal): ResolutionProposal
 			const normalized = String(warning);
 			return normalized ? [normalized] : [];
 		}),
+		queueRemovalOptions: normalizeQueueRemovalOptions(input.queueRemovalOptions),
 	};
 }
 
