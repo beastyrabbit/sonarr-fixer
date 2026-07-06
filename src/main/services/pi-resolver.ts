@@ -19,6 +19,7 @@ import { seedOpenAICodexAuthFromCodex } from "./pi-auth.js";
 import { createProposalTool } from "./pi-proposal-tool.js";
 import { createSonarrLookupTools } from "./pi-sonarr-tools.js";
 import { SonarrClient } from "./sonarr-client.js";
+import { compactCandidate } from "./sonarr-format.js";
 import { validateProposalForImport } from "./validation.js";
 
 type EmitEvent = (event: Omit<ResolverEvent, "timestamp">) => void;
@@ -35,44 +36,32 @@ function emit(emitEvent: EmitEvent | undefined, event: Omit<ResolverEvent, "time
 	emitEvent?.(event);
 }
 
-function compactCandidate(candidate: ManualImportCandidate) {
-	return {
-		id: candidate.id,
-		path: candidate.path,
-		relativePath: candidate.relativePath,
-		name: candidate.name,
-		size: candidate.size,
-		seriesTitle: candidate.seriesTitle,
-		seasonNumber: candidate.seasonNumber,
-		episodeIds: candidate.episodeIds,
-		absoluteEpisodeNumbers: candidate.absoluteEpisodeNumbers,
-		episodeLabels: candidate.episodeLabels,
-		quality: candidate.qualityLabel,
-		languages: candidate.languageLabels,
-		releaseGroup: candidate.releaseGroup,
-		rejections: candidate.rejections,
-		isLikelySample: candidate.isLikelySample,
-		sampleReason: candidate.sampleReason,
-	};
-}
-
 function buildSystemPrompt(): string {
 	return [
 		"You resolve Sonarr downloaded-queue manual import problems.",
 		"You may use the provided read-only Sonarr lookup tools, but you do not mutate Sonarr.",
 		"You receive one queue item plus Sonarr manual import candidates, and you have read-only Sonarr lookup tools.",
 		"You must finish by calling propose_sonarr_resolution exactly once.",
-		"You decide both the physical file candidate and the exact Sonarr episode ids to import it as.",
+		"You decide both the physical file candidate or candidates and the exact Sonarr episode ids to import them as.",
 		"Return that decision only through selectedImports in propose_sonarr_resolution.",
 		"Never select candidates marked as likely samples.",
+		"Every imported candidate must include German as one of its languages. If a candidate does not include German, do not import it.",
+		"If no importable candidate includes German, use remove_queue_item and set queueRemovalOptions to removeFromClient=true, blocklist=true, skipRedownload=false, changeCategory=false so Sonarr can search for a German replacement.",
+		"Never import Blu-ray disc structure stream chunks such as BDMV/STREAM/*.m2ts.",
+		"If the download is only Blu-ray disc structure stream chunks, use remove_queue_item.",
 		"Treat Sonarr status messages as the main diagnostic clue.",
+		"When Sonarr reports a quality, custom format, or non-upgrade rejection, call sonarr_get_upgrade_context before deciding. Compare the candidate to the current episode file, quality profile, custom format score, and languages.",
+		"If the candidate is otherwise valid but does not improve the existing episode file according to Sonarr's profile/custom-format scoring, do not import it. Use remove_queue_item with queueRemovalOptions removeFromClient=true, blocklist=false, skipRedownload=false, changeCategory=false.",
+		"For unsuitable or unwanted releases, such as non-German files, wrong episodes, wrong series, missing usable video files, or disc structures, use remove_queue_item with queueRemovalOptions removeFromClient=true, blocklist=true, skipRedownload=false, changeCategory=false so Sonarr searches again.",
+		"If Sonarr exposes multiple clean Season Pack manual import candidates for one download, you may import all safe candidates using their parsed episode ids even when the currently selected queue row targets only one episode.",
 		"Use sonarr_find_episodes to verify anime absolute numbers, scene numbers, season/episode mapping, and titles before resolving unexpected-episode warnings.",
 		"Sonarr's candidate episode ids are Sonarr's current guess; you may override them in selectedImports when the warning and Sonarr episode lookup show the file should import as different episode ids.",
 		"If a file visibly matches the queued episode's absolute number/title after lookup, select that file and map it to the correct Sonarr episode ids.",
 		"If the file identity, target episode ids, or episode mapping remain uncertain after lookup, use needs_review.",
 		"Explain how the selected candidate resolves or conflicts with Sonarr's warning.",
 		"Use needs_review when the data is ambiguous, incomplete, or would require guessing.",
-		"Use remove_queue_item only when the queue item clearly cannot be imported; the app will still require human confirmation.",
+		"Use remove_queue_item only when the queue item clearly cannot be imported or should not be imported.",
+		"Use ignore_queue_item only when the download should stay untouched in the download client but Sonarr should stop tracking it, for example files the user keeps outside Sonarr's library.",
 	].join("\n");
 }
 
@@ -106,12 +95,20 @@ ${JSON.stringify(candidates.map(compactCandidate), null, 2)}
 Rules:
 - Read Sonarr's statusMessages first. They describe the actual failure mode.
 - Use sonarr_find_episodes when Sonarr mentions an unexpected episode, anime absolute numbers, or scene numbering.
+- Use sonarr_get_upgrade_context when Sonarr mentions quality, custom formats, scores, existing files, or non-upgrade rejections.
 - Compare Sonarr's target episode ids, the queue folder/title, the candidate filename/title, and Sonarr's episode lookup before deciding.
+- Every imported candidate must include German in its languages. If the only visible candidate is not German, do not import it.
+- If no importable candidate includes German, propose remove_queue_item with queueRemovalOptions { removeFromClient: true, blocklist: true, skipRedownload: false, changeCategory: false } so Sonarr can search for a German release.
+- If Sonarr's upgrade context shows the existing file is already better and the candidate is otherwise valid, propose remove_queue_item with queueRemovalOptions { removeFromClient: true, blocklist: false, skipRedownload: false, changeCategory: false }. Do not blocklist these ordinary non-upgrades.
+- If the release is unsuitable or unwanted, such as non-German, wrong episode, wrong series, missing usable video files, or disc structure, propose remove_queue_item with queueRemovalOptions { removeFromClient: true, blocklist: true, skipRedownload: false, changeCategory: false } so Sonarr searches again.
 - You are allowed to import a candidate using episode ids different from Sonarr's parsed candidate ids if your Sonarr lookup supports that mapping.
+- For multi-file Season Pack candidates from the same download, you may select multiple safe candidates and map each one to its own Sonarr-parsed episode ids. Do not reject a season pack solely because the first visible candidate is not the currently selected queue target.
 - Put the exact import mapping in selectedImports: candidateId plus the Sonarr episode ids to import the file as.
 - Do not import if you cannot explain why the selected file and selected episode ids are the correct pair.
 - If one real episode file and one sample are present, select only the real episode file and list the sample id in sampleCandidateIds.
 - Do not select sample-like candidates even if Sonarr guessed an episode.
+- Do not import Blu-ray disc structure chunks such as BDMV/STREAM/*.m2ts.
+- If all candidates are Blu-ray disc structure chunks, use remove_queue_item.
 - If Sonarr rejections are blocking or the episode/series mapping is unclear, use needs_review.
 - Call propose_sonarr_resolution now.`;
 }
@@ -223,6 +220,7 @@ export class PiResolver {
 				"sonarr_get_queue_context",
 				"sonarr_find_episodes",
 				"sonarr_get_manual_import_candidates",
+				"sonarr_get_upgrade_context",
 				"propose_sonarr_resolution",
 			],
 			customTools: [...sonarrLookupTools, proposalTool],
@@ -234,7 +232,11 @@ export class PiResolver {
 		const abort = () => {
 			void session.abort();
 		};
-		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) {
+			abort();
+		} else {
+			signal?.addEventListener("abort", abort, { once: true });
+		}
 
 		try {
 			session.subscribe((event) => {
@@ -254,8 +256,10 @@ export class PiResolver {
 				}
 			});
 
-			emit(input.emit, { type: "pi", itemId: queueItem.id, message: "Starting typed Pi analysis." });
-			await session.prompt(buildPrompt(queueItem, candidates));
+			if (!signal?.aborted) {
+				emit(input.emit, { type: "pi", itemId: queueItem.id, message: "Starting typed Pi analysis." });
+				await session.prompt(buildPrompt(queueItem, candidates));
+			}
 
 			if (!capturedProposal && !signal?.aborted) {
 				emit(input.emit, {

@@ -31,15 +31,6 @@ export interface SaveConfigInput {
 	autoResolveParallelism?: number;
 }
 
-export interface DoctorResult {
-	ok: boolean;
-	checks: Array<{
-		name: string;
-		ok: boolean;
-		message: string;
-	}>;
-}
-
 export interface QueueItem {
 	id: number;
 	title: string;
@@ -49,6 +40,7 @@ export interface QueueItem {
 	status?: string;
 	trackedDownloadStatus?: string;
 	trackedDownloadState?: string;
+	isInProgress?: boolean;
 	size?: number;
 	outputPath?: string;
 	episodeIds: number[];
@@ -78,6 +70,9 @@ export interface ManualImportCandidate {
 	languages: unknown[];
 	languageLabels: string[];
 	releaseGroup?: string;
+	customFormats?: unknown[];
+	customFormatLabels?: string[];
+	customFormatScore?: number;
 	indexerFlags?: number;
 	releaseType?: string;
 	rejections: string[];
@@ -104,6 +99,7 @@ export interface ResolutionProposal {
 	sonarrIssueSummary: string;
 	evidence: string[];
 	warnings: string[];
+	queueRemovalOptions?: QueueRemovalOptions;
 }
 
 export interface ValidationIssue {

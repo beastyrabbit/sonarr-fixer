@@ -1,7 +1,16 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ManualImportCandidate, QueueItem } from "../../shared/types.js";
-import type { SonarrClient, SonarrEpisodeRecord } from "./sonarr-client.js";
+import type {
+	SonarrClient,
+	SonarrCustomFormatRecord,
+	SonarrCustomFormatSummary,
+	SonarrEpisodeFileRecord,
+	SonarrEpisodeRecord,
+	SonarrQualityProfileItem,
+	SonarrQualityProfileRecord,
+} from "./sonarr-client.js";
+import { compactCandidate, episodeLabel } from "./sonarr-format.js";
 
 type SonarrToolEvent = {
 	type: "info" | "warning" | "error" | "pi" | "sonarr";
@@ -21,28 +30,6 @@ interface CreateSonarrLookupToolsInput {
 	emit?: EmitEvent;
 }
 
-function compactCandidate(candidate: ManualImportCandidate) {
-	return {
-		id: candidate.id,
-		path: candidate.path,
-		relativePath: candidate.relativePath,
-		folderName: candidate.folderName,
-		name: candidate.name,
-		size: candidate.size,
-		seriesId: candidate.seriesId,
-		seriesTitle: candidate.seriesTitle,
-		episodeIds: candidate.episodeIds,
-		absoluteEpisodeNumbers: candidate.absoluteEpisodeNumbers,
-		episodeLabels: candidate.episodeLabels,
-		quality: candidate.qualityLabel,
-		languages: candidate.languageLabels,
-		releaseGroup: candidate.releaseGroup,
-		rejections: candidate.rejections,
-		isLikelySample: candidate.isLikelySample,
-		sampleReason: candidate.sampleReason,
-	};
-}
-
 function compactEpisode(episode: SonarrEpisodeRecord) {
 	return {
 		id: episode.id,
@@ -55,22 +42,87 @@ function compactEpisode(episode: SonarrEpisodeRecord) {
 		sceneAbsoluteEpisodeNumber: episode.sceneAbsoluteEpisodeNumber,
 		title: episode.title,
 		hasFile: episode.hasFile,
+		episodeFileId: episode.episodeFileId,
 		monitored: episode.monitored,
 		label: episodeLabel(episode),
 	};
 }
 
-function episodeLabel(episode: SonarrEpisodeRecord): string {
-	const season =
-		typeof episode.seasonNumber === "number" ? `S${String(episode.seasonNumber).padStart(2, "0")}` : "";
-	const number =
-		typeof episode.episodeNumber === "number"
-			? `E${String(episode.episodeNumber).padStart(2, "0")}`
-			: episode.absoluteEpisodeNumber
-				? `A${episode.absoluteEpisodeNumber}`
-				: "";
-	const prefix = [season, number].filter(Boolean).join("");
-	return [prefix, episode.title].filter(Boolean).join(" - ") || `Episode ${episode.id ?? "unknown"}`;
+function valueName(value: unknown): string {
+	if (!value || typeof value !== "object") {
+		return String(value ?? "");
+	}
+	const record = value as Record<string, unknown>;
+	return String(record.name ?? record.id ?? "");
+}
+
+function compactFormat(format: SonarrCustomFormatSummary) {
+	return {
+		id: format.id,
+		name: format.name,
+	};
+}
+
+function compactEpisodeFile(file?: SonarrEpisodeFileRecord) {
+	if (!file) {
+		return undefined;
+	}
+	return {
+		id: file.id,
+		path: file.path,
+		relativePath: file.relativePath,
+		size: file.size,
+		quality: valueName((file.quality as { quality?: unknown } | undefined)?.quality ?? file.quality),
+		languages: (file.languages ?? []).map(valueName).filter(Boolean),
+		releaseGroup: file.releaseGroup,
+		releaseType: file.releaseType,
+		customFormats: (file.customFormats ?? []).map(compactFormat),
+		customFormatScore: file.customFormatScore,
+		qualityCutoffNotMet: file.qualityCutoffNotMet,
+	};
+}
+
+function flattenAllowedQualityNames(items: SonarrQualityProfileItem[] = []): string[] {
+	const names: string[] = [];
+	for (const item of items) {
+		if (item.allowed && item.quality?.name) {
+			names.push(item.quality.name);
+		}
+		names.push(...flattenAllowedQualityNames(item.items));
+	}
+	return names;
+}
+
+function compactQualityProfile(profile: SonarrQualityProfileRecord) {
+	return {
+		id: profile.id,
+		name: profile.name,
+		upgradeAllowed: profile.upgradeAllowed,
+		cutoff: profile.cutoff,
+		minFormatScore: profile.minFormatScore,
+		cutoffFormatScore: profile.cutoffFormatScore,
+		minUpgradeFormatScore: profile.minUpgradeFormatScore,
+		allowedQualities: flattenAllowedQualityNames(profile.items),
+		formatItems: (profile.formatItems ?? []).map((item) => ({
+			format: item.format,
+			name: item.name,
+			score: item.score,
+		})),
+	};
+}
+
+function compactCustomFormat(format: SonarrCustomFormatRecord) {
+	return {
+		id: format.id,
+		name: format.name,
+		includeCustomFormatWhenRenaming: format.includeCustomFormatWhenRenaming,
+	};
+}
+
+function numberSet(values: Array<number | undefined>): Set<number> {
+	return new Set(
+		values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
+	);
 }
 
 function episodeNumbers(episode: SonarrEpisodeRecord): number[] {
@@ -257,5 +309,107 @@ export function createSonarrLookupTools({
 		},
 	});
 
-	return [getQueueContextTool, findEpisodesTool, getCandidatesTool];
+	const getUpgradeContextTool = defineTool({
+		name: "sonarr_get_upgrade_context",
+		label: "Get Upgrade Context",
+		description:
+			"Read current episode files, quality profile scoring, and custom format data for deciding whether a candidate is a real upgrade.",
+		promptSnippet:
+			"Use sonarr_get_upgrade_context when Sonarr mentions custom formats, quality profiles, upgrade rejections, or existing files.",
+		promptGuidelines: [
+			"Use this before overriding a non-upgrade or custom-format rejection.",
+			"Compare the candidate languages/custom format score with the existing episode file and profile scoring.",
+		],
+		parameters: Type.Object({
+			episodeIds: Type.Optional(
+				Type.Array(Type.Number({ description: "Exact Sonarr episode ids. Defaults to queue target ids." })),
+			),
+			includeCustomFormatDefinitions: Type.Optional(
+				Type.Boolean({
+					description:
+						"Return all custom format names, not only formats relevant to the target file/candidates/profile.",
+				}),
+			),
+		}),
+		executionMode: "parallel" as const,
+		async execute(_toolCallId, params) {
+			const episodeIds = params.episodeIds?.length ? params.episodeIds : queueItem.episodeIds;
+			const [episodes, qualityProfiles, customFormats] = await Promise.all([
+				episodeIds.length
+					? client.getEpisodes({ episodeIds, includeSeries: true, includeEpisodeFile: true })
+					: safeGetTargetEpisodes(client, queueItem),
+				client.getQualityProfiles().catch(() => []),
+				client.getCustomFormats().catch(() => []),
+			]);
+			rememberEpisodeIds?.(episodes.flatMap((episode) => (episode.id ? [episode.id] : [])));
+
+			const profileIds = numberSet(episodes.map((episode) => episode.series?.qualityProfileId));
+			const relevantFormatIds = numberSet([
+				...episodes.flatMap((episode) =>
+					(episode.episodeFile?.customFormats ?? []).map((format) => format.id),
+				),
+				...getCandidates().flatMap((candidate) =>
+					(candidate.customFormats ?? []).map((format) => {
+						if (format && typeof format === "object" && "id" in format) {
+							return Number((format as { id?: unknown }).id);
+						}
+						return undefined;
+					}),
+				),
+			]);
+			for (const profile of qualityProfiles) {
+				if (profile.id && profileIds.has(profile.id)) {
+					for (const item of profile.formatItems ?? []) {
+						if (typeof item.format === "number") {
+							relevantFormatIds.add(item.format);
+						}
+					}
+				}
+			}
+
+			const details = {
+				queueItem: {
+					id: queueItem.id,
+					title: queueItem.title,
+					targetEpisodeIds: queueItem.episodeIds,
+					statusMessages: queueItem.statusMessages,
+				},
+				targetEpisodes: episodes.map((episode) => ({
+					...compactEpisode(episode),
+					series: episode.series
+						? {
+								id: episode.series.id,
+								title: episode.series.title,
+								qualityProfileId: episode.series.qualityProfileId,
+								languageProfileId: episode.series.languageProfileId,
+								seriesType: episode.series.seriesType,
+							}
+						: undefined,
+					currentFile: compactEpisodeFile(episode.episodeFile),
+				})),
+				candidates: getCandidates().map(compactCandidate),
+				qualityProfiles: qualityProfiles
+					.filter((profile) => profile.id && profileIds.has(profile.id))
+					.map(compactQualityProfile),
+				customFormats: customFormats
+					.filter(
+						(format) =>
+							params.includeCustomFormatDefinitions ||
+							(format.id !== undefined && relevantFormatIds.has(format.id)),
+					)
+					.map(compactCustomFormat),
+			};
+			emit?.({
+				type: "sonarr",
+				itemId: queueItem.id,
+				message: `Pi inspected upgrade context for ${episodes.length} episode(s).`,
+			});
+			return {
+				content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+				details,
+			};
+		},
+	});
+
+	return [getQueueContextTool, findEpisodesTool, getCandidatesTool, getUpgradeContextTool];
 }

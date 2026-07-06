@@ -7,6 +7,7 @@ import type {
 	SonarrSystemStatus,
 } from "../../shared/types.js";
 import { detectLikelySample } from "./sample.js";
+import { episodeLabel } from "./sonarr-format.js";
 import { normalizeProposal, resolveImportEpisodeIds, validateProposalForImport } from "./validation.js";
 
 class SonarrRequestError extends Error {
@@ -31,6 +32,8 @@ type SonarrQueueRecord = {
 	id: number;
 	title?: string;
 	size?: number;
+	sizeLeft?: number;
+	sizeleft?: number;
 	status?: string;
 	trackedDownloadStatus?: string;
 	trackedDownloadState?: string;
@@ -52,6 +55,7 @@ export type SonarrEpisodeRecord = {
 	id?: number;
 	seriesId?: number;
 	title?: string;
+	episodeFileId?: number;
 	seasonNumber?: number;
 	episodeNumber?: number;
 	absoluteEpisodeNumber?: number;
@@ -60,6 +64,74 @@ export type SonarrEpisodeRecord = {
 	sceneSeasonNumber?: number;
 	hasFile?: boolean;
 	monitored?: boolean;
+	episodeFile?: SonarrEpisodeFileRecord;
+	series?: SonarrSeriesRecord;
+};
+
+export type SonarrSeriesRecord = {
+	id?: number;
+	title?: string;
+	qualityProfileId?: number;
+	languageProfileId?: number;
+	seriesType?: string;
+	path?: string;
+};
+
+export type SonarrEpisodeFileRecord = {
+	id?: number;
+	seriesId?: number;
+	seasonNumber?: number;
+	relativePath?: string;
+	path?: string;
+	size?: number;
+	dateAdded?: string;
+	sceneName?: string;
+	releaseGroup?: string;
+	languages?: unknown[];
+	quality?: unknown;
+	customFormats?: SonarrCustomFormatSummary[];
+	customFormatScore?: number;
+	indexerFlags?: number;
+	releaseType?: string;
+	qualityCutoffNotMet?: boolean;
+};
+
+export type SonarrCustomFormatSummary = {
+	id?: number;
+	name?: string;
+};
+
+export type SonarrQualityProfileFormatItem = {
+	format?: number;
+	name?: string;
+	score?: number;
+};
+
+export type SonarrQualityProfileItem = {
+	id?: number;
+	name?: string;
+	quality?: { id?: number; name?: string; source?: string; resolution?: number };
+	items?: SonarrQualityProfileItem[];
+	allowed?: boolean;
+};
+
+export type SonarrQualityProfileRecord = {
+	id?: number;
+	name?: string;
+	upgradeAllowed?: boolean;
+	cutoff?: number;
+	items?: SonarrQualityProfileItem[];
+	minFormatScore?: number;
+	cutoffFormatScore?: number;
+	minUpgradeFormatScore?: number;
+	formatItems?: SonarrQualityProfileFormatItem[];
+};
+
+export type SonarrCustomFormatRecord = {
+	id?: number;
+	name?: string;
+	includeCustomFormatWhenRenaming?: boolean;
+	specifications?: unknown[];
 };
 
 type SonarrManualImportRecord = {
@@ -74,6 +146,8 @@ type SonarrManualImportRecord = {
 	quality?: unknown;
 	languages?: unknown[];
 	releaseGroup?: string;
+	customFormats?: SonarrCustomFormatSummary[];
+	customFormatScore?: number;
 	indexerFlags?: number;
 	releaseType?: string;
 	rejections?: Array<string | { reason?: string; message?: string }>;
@@ -110,19 +184,6 @@ function appendQuery(path: string, params: Record<string, string | number | bool
 	return query ? `${path}?${query}` : path;
 }
 
-function episodeLabel(episode: SonarrEpisodeRecord): string {
-	const season =
-		typeof episode.seasonNumber === "number" ? `S${String(episode.seasonNumber).padStart(2, "0")}` : "";
-	const number =
-		typeof episode.episodeNumber === "number"
-			? `E${String(episode.episodeNumber).padStart(2, "0")}`
-			: episode.absoluteEpisodeNumber
-				? `A${episode.absoluteEpisodeNumber}`
-				: "";
-	const prefix = [season, number].filter(Boolean).join("");
-	return [prefix, episode.title].filter(Boolean).join(" - ") || `Episode ${episode.id ?? "unknown"}`;
-}
-
 function qualityLabel(quality: unknown): string | undefined {
 	if (!quality || typeof quality !== "object") {
 		return undefined;
@@ -146,11 +207,77 @@ function languageLabel(language: unknown): string {
 	return String(record.name ?? record.language?.toString() ?? JSON.stringify(language));
 }
 
+function customFormatLabel(format: SonarrCustomFormatSummary): string {
+	return String(format.name ?? format.id ?? "");
+}
+
 function rejectionLabel(rejection: string | { reason?: string; message?: string }): string {
 	if (typeof rejection === "string") {
 		return rejection;
 	}
 	return rejection.reason ?? rejection.message ?? JSON.stringify(rejection);
+}
+
+function normalizedQueueValue(value?: string): string {
+	return (value ?? "").replace(/[\s_-]+/g, "").toLowerCase();
+}
+
+function numericQueueValue(value: unknown): number | undefined {
+	const numeric = Number(value);
+	return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function queueSizeLeft(item: { sizeLeft?: number; sizeleft?: number }): number | undefined {
+	return numericQueueValue(item.sizeLeft ?? item.sizeleft);
+}
+
+export function isInProgressQueueItem(
+	item: Pick<QueueItem, "status" | "trackedDownloadState" | "isInProgress">,
+): boolean {
+	if (item.isInProgress !== undefined) {
+		return item.isInProgress;
+	}
+
+	const status = normalizedQueueValue(item.status);
+	const state = normalizedQueueValue(item.trackedDownloadState);
+	return (
+		state === "downloading" ||
+		state === "importing" ||
+		status === "queued" ||
+		status === "paused" ||
+		status === "downloading" ||
+		status === "delay" ||
+		status === "downloadclientunavailable" ||
+		status === "fallback"
+	);
+}
+
+function isInProgressQueueRecord(record: SonarrQueueRecord): boolean {
+	const sizeLeft = queueSizeLeft(record);
+	return isInProgressQueueItem(record) || (typeof sizeLeft === "number" && sizeLeft > 0);
+}
+
+export function canLoadManualImportCandidates(
+	item: Pick<
+		QueueItem,
+		"downloadId" | "status" | "trackedDownloadStatus" | "trackedDownloadState" | "isInProgress"
+	>,
+): boolean {
+	if (!item.downloadId || isInProgressQueueItem(item)) {
+		return false;
+	}
+
+	const status = normalizedQueueValue(item.status);
+	const trackedDownloadStatus = normalizedQueueValue(item.trackedDownloadStatus);
+	const trackedDownloadState = normalizedQueueValue(item.trackedDownloadState);
+	const hasWarning = status === "warning" || trackedDownloadStatus === "warning";
+	const isCompletedForImport =
+		status === "completed" ||
+		status === "warning" ||
+		trackedDownloadState === "importblocked" ||
+		trackedDownloadState === "importpending";
+
+	return hasWarning && isCompletedForImport;
 }
 
 function normalizeQueueRecord(record: SonarrQueueRecord): QueueItem {
@@ -192,8 +319,14 @@ function normalizeQueueRecord(record: SonarrQueueRecord): QueueItem {
 
 	const trackedDownloadStatus = record.trackedDownloadStatus;
 	const status = record.status;
-	const canAnalyze =
-		Boolean(record.downloadId) && status === "completed" && trackedDownloadStatus === "warning";
+	const isInProgress = isInProgressQueueRecord(record);
+	const canAnalyze = canLoadManualImportCandidates({
+		downloadId: record.downloadId,
+		status,
+		trackedDownloadStatus,
+		trackedDownloadState: record.trackedDownloadState,
+		isInProgress,
+	});
 
 	return {
 		id: record.id,
@@ -204,6 +337,7 @@ function normalizeQueueRecord(record: SonarrQueueRecord): QueueItem {
 		status,
 		trackedDownloadStatus,
 		trackedDownloadState: record.trackedDownloadState,
+		isInProgress,
 		size: record.size,
 		outputPath: record.outputPath,
 		episodeIds,
@@ -253,6 +387,9 @@ function normalizeManualImportRecord(record: SonarrManualImportRecord, index: nu
 		languages: record.languages ?? [],
 		languageLabels: (record.languages ?? []).map(languageLabel),
 		releaseGroup: record.releaseGroup,
+		customFormats: record.customFormats ?? [],
+		customFormatLabels: (record.customFormats ?? []).map(customFormatLabel).filter(Boolean),
+		customFormatScore: record.customFormatScore,
 		indexerFlags: record.indexerFlags,
 		releaseType: record.releaseType,
 		rejections: (record.rejections ?? []).map(rejectionLabel),
@@ -314,6 +451,14 @@ export class SonarrClient {
 		return this.request<SonarrSystemStatus>("/api/v3/system/status");
 	}
 
+	async getQualityProfiles(): Promise<SonarrQualityProfileRecord[]> {
+		return this.request<SonarrQualityProfileRecord[]>("/api/v3/qualityprofile");
+	}
+
+	async getCustomFormats(): Promise<SonarrCustomFormatRecord[]> {
+		return this.request<SonarrCustomFormatRecord[]>("/api/v3/customformat");
+	}
+
 	async getEpisodes({
 		seriesId,
 		seasonNumber,
@@ -354,23 +499,40 @@ export class SonarrClient {
 				includeEpisode: true,
 			}),
 		);
-		return (response.records ?? []).map(normalizeQueueRecord);
+		return (response.records ?? []).map(normalizeQueueRecord).filter((queueItem) => !queueItem.isInProgress);
 	}
 
 	async getManualImportCandidates(queueItem: QueueItem): Promise<ManualImportCandidate[]> {
-		if (!queueItem.downloadId) {
+		if (!canLoadManualImportCandidates(queueItem)) {
+			return [];
+		}
+		const downloadId = queueItem.downloadId;
+		if (!downloadId) {
 			return [];
 		}
 
-		const query = new URLSearchParams();
-		query.append("downloadIds", queueItem.downloadId);
-		query.set("filterExistingFiles", "false");
+		const loadFromFolder = async (): Promise<ManualImportCandidate[]> => {
+			const path = appendQuery("/api/v3/manualimport", {
+				folder: queueItem.outputPath,
+				downloadId,
+				filterExistingFiles: false,
+			});
+			const records = await this.request<SonarrManualImportRecord[]>(path);
+			return normalizeManualImportRecords(records);
+		};
 
 		try {
 			const records = await this.request<SonarrManualImportRecord[]>(
-				`/api/v5/manualimport?${query.toString()}`,
+				appendQuery("/api/v3/manualimport", {
+					downloadId,
+					filterExistingFiles: false,
+				}),
 			);
-			return normalizeManualImportRecords(records);
+			const candidates = normalizeManualImportRecords(records);
+			if (candidates.length === 0 && queueItem.outputPath) {
+				return loadFromFolder();
+			}
+			return candidates;
 		} catch (error) {
 			if (!(error instanceof SonarrRequestError) || ![404, 405].includes(error.status)) {
 				throw error;
@@ -378,13 +540,7 @@ export class SonarrClient {
 			if (!queueItem.outputPath) {
 				throw error;
 			}
-			const path = appendQuery("/api/v3/manualimport", {
-				folder: queueItem.outputPath,
-				downloadId: queueItem.downloadId,
-				filterExistingFiles: false,
-			});
-			const records = await this.request<SonarrManualImportRecord[]>(path);
-			return normalizeManualImportRecords(records);
+			return loadFromFolder();
 		}
 	}
 

@@ -12,9 +12,8 @@ import type {
 	SaveConfigInput,
 } from "../shared/types.js";
 import { loadConfig, saveConfig, toPublicConfig } from "./services/config.js";
-import { seedOpenAICodexAuthFromCodex } from "./services/pi-auth.js";
 import { PiResolver } from "./services/pi-resolver.js";
-import { SonarrClient } from "./services/sonarr-client.js";
+import { canLoadManualImportCandidates, SonarrClient } from "./services/sonarr-client.js";
 
 function eventNow(event: Omit<ResolverEvent, "timestamp">): ResolverEvent {
 	return { ...event, timestamp: new Date().toISOString() };
@@ -55,7 +54,7 @@ function candidateLoadFailure(queueItem: QueueItem, error: unknown): AnalysisRes
 }
 
 export function registerIpc(mainWindow: BrowserWindow): void {
-	const activeAbortControllers = new Set<AbortController>();
+	const activeAbortControllers = new Map<number, AbortController>();
 
 	const emit = (event: Omit<ResolverEvent, "timestamp">) => {
 		mainWindow.webContents.send("resolver:event", eventNow(event));
@@ -67,51 +66,6 @@ export function registerIpc(mainWindow: BrowserWindow): void {
 		saveConfig(input),
 	);
 
-	ipcMain.handle("doctor:run", async () => {
-		const config = await loadConfig();
-		const checks: Array<{ name: string; ok: boolean; message: string }> = [];
-
-		try {
-			const status = await createClient(config).getSystemStatus();
-			checks.push({
-				name: "Sonarr",
-				ok: true,
-				message: `${status.instanceName ?? status.appName ?? "Sonarr"} ${status.version ?? ""}`.trim(),
-			});
-		} catch (error) {
-			checks.push({
-				name: "Sonarr",
-				ok: false,
-				message: error instanceof Error ? error.message : String(error),
-			});
-		}
-
-		try {
-			const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent");
-			const authStorage = AuthStorage.create();
-			seedOpenAICodexAuthFromCodex(authStorage);
-			const modelRegistry = ModelRegistry.create(authStorage);
-			const model = modelRegistry.find(config.piProvider, config.piModel);
-			checks.push({
-				name: "Pi",
-				ok: Boolean(model && modelRegistry.hasConfiguredAuth(model)),
-				message: model
-					? modelRegistry.hasConfiguredAuth(model)
-						? `${config.piProvider}/${config.piModel} auth configured`
-						: `${config.piProvider}/${config.piModel} found but auth missing`
-					: `${config.piProvider}/${config.piModel} not found`,
-			});
-		} catch (error) {
-			checks.push({
-				name: "Pi",
-				ok: false,
-				message: error instanceof Error ? error.message : String(error),
-			});
-		}
-
-		return { ok: checks.every((check) => check.ok), checks };
-	});
-
 	ipcMain.handle("queue:list", async () => {
 		const client = createClient(await loadConfig());
 		emit({ type: "sonarr", message: "Loading Sonarr queue." });
@@ -122,6 +76,14 @@ export function registerIpc(mainWindow: BrowserWindow): void {
 
 	ipcMain.handle("manual-import:list", async (_event: IpcMainInvokeEvent, queueItem: QueueItem) => {
 		const client = createClient(await loadConfig());
+		if (!canLoadManualImportCandidates(queueItem)) {
+			emit({
+				type: "sonarr",
+				itemId: queueItem.id,
+				message: "Skipping manual import candidates for an in-progress or non-actionable download.",
+			});
+			return [];
+		}
 		emit({ type: "sonarr", itemId: queueItem.id, message: "Loading manual import candidates." });
 		let candidates: ManualImportCandidate[] = [];
 		try {
@@ -144,12 +106,25 @@ export function registerIpc(mainWindow: BrowserWindow): void {
 
 	ipcMain.handle("queue:analyze", async (_event: IpcMainInvokeEvent, queueItem: QueueItem) => {
 		const abortController = new AbortController();
-		activeAbortControllers.add(abortController);
+		activeAbortControllers.get(queueItem.id)?.abort();
+		activeAbortControllers.set(queueItem.id, abortController);
 
 		try {
 			const config = await loadConfig();
 			const client = createClient(config);
 			const resolver = new PiResolver();
+
+			if (!canLoadManualImportCandidates(queueItem)) {
+				emit({
+					type: "sonarr",
+					itemId: queueItem.id,
+					message: "Skipping analysis for an in-progress or non-actionable download.",
+				});
+				return candidateLoadFailure(
+					queueItem,
+					new Error("Download is still in progress or is not ready for manual import."),
+				);
+			}
 
 			emit({ type: "sonarr", itemId: queueItem.id, message: "Loading manual import candidates." });
 			let candidates: ManualImportCandidate[] = [];
@@ -178,14 +153,23 @@ export function registerIpc(mainWindow: BrowserWindow): void {
 			});
 
 			emit({
-				type: result.validation.ok ? "pi" : "warning",
+				type: !result.validation.ok ? "warning" : "pi",
 				itemId: queueItem.id,
 				message: `Pi proposal: ${result.proposal.action} (${Math.round(result.proposal.confidence * 100)}%).`,
 				details: result.proposal,
 			});
 			return result;
+		} catch (error) {
+			emit({
+				type: "error",
+				itemId: queueItem.id,
+				message: `Analysis failed: ${errorMessage(error)}`,
+			});
+			throw error;
 		} finally {
-			activeAbortControllers.delete(abortController);
+			if (activeAbortControllers.get(queueItem.id) === abortController) {
+				activeAbortControllers.delete(queueItem.id);
+			}
 		}
 	});
 
@@ -213,11 +197,21 @@ export function registerIpc(mainWindow: BrowserWindow): void {
 		},
 	);
 
-	ipcMain.handle("resolver:cancel", async () => {
-		for (const abortController of activeAbortControllers) {
+	ipcMain.handle("resolver:cancel", async (_event: IpcMainInvokeEvent, itemId?: number) => {
+		if (typeof itemId === "number") {
+			const abortController = activeAbortControllers.get(itemId);
+			if (abortController) {
+				abortController.abort();
+				activeAbortControllers.delete(itemId);
+				emit({ type: "warning", itemId, message: `Cancelled analysis for queue item ${itemId}.` });
+			}
+			return;
+		}
+
+		for (const abortController of activeAbortControllers.values()) {
 			abortController.abort();
 		}
 		activeAbortControllers.clear();
-		emit({ type: "warning", message: "Cancelled active resolver runs." });
+		emit({ type: "warning", message: "Cancellation requested." });
 	});
 }

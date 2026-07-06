@@ -52,4 +52,80 @@ describe("createProposalTool", () => {
 		expect(result.terminate).toBe(true);
 		expect(captured?.confidence).toBe(1);
 	});
+
+	it("captures queue removal options for AI-guided blocklist/search decisions", async () => {
+		let captured: ResolutionProposal | undefined;
+		const tool = createProposalTool(["candidate_1"], (proposal) => {
+			captured = proposal;
+		});
+
+		await tool.execute(
+			"call_1",
+			{
+				action: "remove_queue_item",
+				confidence: 0.94,
+				selectedCandidateIds: [],
+				selectedImports: [],
+				sampleCandidateIds: [],
+				queueRemovalOptions: {
+					removeFromClient: true,
+					blocklist: true,
+					skipRedownload: false,
+					changeCategory: false,
+				},
+				reason: "Candidate is not German, so Sonarr should search for a replacement.",
+				sonarrIssueSummary: "The visible release is not useful for this library.",
+				evidence: ["Candidate languages do not include German."],
+				warnings: [],
+			},
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(captured?.queueRemovalOptions).toEqual({
+			removeFromClient: true,
+			blocklist: true,
+			skipRedownload: false,
+			changeCategory: false,
+		});
+	});
+
+	it("captures plain removal options for existing-file-is-better decisions", async () => {
+		let captured: ResolutionProposal | undefined;
+		const tool = createProposalTool(["candidate_1"], (proposal) => {
+			captured = proposal;
+		});
+
+		await tool.execute(
+			"call_1",
+			{
+				action: "remove_queue_item",
+				confidence: 0.98,
+				selectedCandidateIds: [],
+				selectedImports: [],
+				sampleCandidateIds: [],
+				queueRemovalOptions: {
+					removeFromClient: true,
+					blocklist: false,
+					skipRedownload: false,
+					changeCategory: false,
+				},
+				reason: "The existing episode file already has a better custom format score.",
+				sonarrIssueSummary: "Sonarr rejected the candidate as a non-upgrade.",
+				evidence: ["Existing score 12905 is above candidate score 10012."],
+				warnings: [],
+			},
+			undefined,
+			undefined,
+			undefined as never,
+		);
+
+		expect(captured?.queueRemovalOptions).toEqual({
+			removeFromClient: true,
+			blocklist: false,
+			skipRedownload: false,
+			changeCategory: false,
+		});
+	});
 });
