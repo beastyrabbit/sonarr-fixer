@@ -7,7 +7,9 @@
 	"license": "MIT",
 	"main": "out/main/index.js",
 	"scripts": {
-		"dev": "electron-vite dev",
+		"predev": "pnpm env:check",
+		"dev": "sh scripts/dev-with-env.sh",
+		"env:check": "sh scripts/check-dev-env.sh",
 		"build": "electron-vite build",
 		"start": "pnpm build && electron .",
 		"run:built": "pnpm build && electron .",

@@ -1,0 +1,5 @@
+scripts:
+  setup: |
+    set -eu
+    corepack pnpm@10.33.0 install
+    pnpm env:check
