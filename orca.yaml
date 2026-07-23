@@ -1,5 +1,24 @@
 scripts:
   setup: |
     set -eu
+    setup_status="$(git rev-parse --git-path orca-setup.status)"
+    trap 'printf "failed\n" > "$setup_status"' EXIT
+    printf "running\n" > "$setup_status"
     corepack pnpm@10.33.0 install
     pnpm env:check
+    printf "ready\n" > "$setup_status"
+    trap - EXIT
+
+defaultTabs:
+  - title: Workspace
+    color: "#737373"
+  - title: Dev
+    color: "#16a34a"
+    command: |
+      setup_status="$(git rev-parse --git-path orca-setup.status)"
+      while [ ! -f "$setup_status" ] || [ "$(cat "$setup_status")" = "running" ]; do sleep 1; done
+      test "$(cat "$setup_status")" = "ready" || {
+        echo "Orca setup failed. Check the Setup tab."
+        exit 1
+      }
+      exec pnpm dev
