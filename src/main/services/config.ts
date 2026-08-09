@@ -2,11 +2,20 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app } from "electron";
 import { z } from "zod";
-import type { AppConfig, PiThinkingLevel, PublicConfig, SaveConfigInput } from "../../shared/types.js";
+import type {
+	AppConfig,
+	MediaService,
+	PiThinkingLevel,
+	PublicConfig,
+	SaveConfigInput,
+} from "../../shared/types.js";
 
 export const defaultConfig: AppConfig = {
+	activeService: "sonarr",
 	sonarrBaseUrl: "",
 	sonarrApiKey: "",
+	radarrBaseUrl: "",
+	radarrApiKey: "",
 	piProvider: "openai-codex",
 	piModel: "gpt-5.4-mini",
 	piThinkingLevel: "medium",
@@ -25,8 +34,11 @@ const piThinkingLevels = [
 
 const storedConfigSchema = z
 	.object({
+		activeService: z.enum(["sonarr", "radarr"]).optional(),
 		sonarrBaseUrl: z.string().optional(),
 		sonarrApiKey: z.string().optional(),
+		radarrBaseUrl: z.string().optional(),
+		radarrApiKey: z.string().optional(),
 		piProvider: z.string().optional(),
 		piModel: z.string().optional(),
 		piThinkingLevel: z.enum(piThinkingLevels).optional(),
@@ -43,7 +55,7 @@ function envPath(): string {
 	return join(process.cwd(), ".env");
 }
 
-function normalizeBaseUrl(value: string): string {
+export function normalizeBaseUrl(value: string): string {
 	const trimmed = value.trim().replace(/\/+$/, "");
 	if (!trimmed) {
 		return trimmed;
@@ -71,8 +83,11 @@ function normalizeConfig(input: Partial<AppConfig>): AppConfig {
 	return {
 		...defaultConfig,
 		...input,
+		activeService: input.activeService === "radarr" ? "radarr" : "sonarr",
 		sonarrBaseUrl: normalizeBaseUrl(input.sonarrBaseUrl ?? defaultConfig.sonarrBaseUrl),
 		sonarrApiKey: (input.sonarrApiKey ?? defaultConfig.sonarrApiKey).trim(),
+		radarrBaseUrl: normalizeBaseUrl(input.radarrBaseUrl ?? defaultConfig.radarrBaseUrl),
+		radarrApiKey: (input.radarrApiKey ?? defaultConfig.radarrApiKey).trim(),
 		piProvider: (input.piProvider ?? defaultConfig.piProvider).trim() || defaultConfig.piProvider,
 		piModel: (input.piModel ?? defaultConfig.piModel).trim() || defaultConfig.piModel,
 		piThinkingLevel,
@@ -187,10 +202,15 @@ async function loadEnvOverrides(): Promise<Partial<AppConfig>> {
 		env.SONARR_FIXER_AUTO_RESOLVE_PARALLELISM,
 	);
 	const piThinkingLevel = firstNonEmpty(env.PI_THINKING_LEVEL, env.SONARR_FIXER_PI_THINKING_LEVEL);
+	const activeService = firstNonEmpty(env.ARR_SERVICE, env.ACTIVE_SERVICE);
 
 	return {
+		activeService:
+			activeService === "sonarr" || activeService === "radarr" ? (activeService as MediaService) : undefined,
 		sonarrBaseUrl: firstNonEmpty(env.SONARR_BASE_URL, env.SONARR_URL),
 		sonarrApiKey: firstNonEmpty(env.SONARR_API_KEY, env.SONARR_API, env.SONARR_TOKEN),
+		radarrBaseUrl: firstNonEmpty(env.RADARR_BASE_URL, env.RADARR_URL),
+		radarrApiKey: firstNonEmpty(env.RADARR_API_KEY, env.RADARR_API, env.RADARR_TOKEN),
 		piProvider: firstNonEmpty(env.PI_PROVIDER, env.SONARR_FIXER_PI_PROVIDER),
 		piModel: firstNonEmpty(env.PI_MODEL, env.SONARR_FIXER_PI_MODEL),
 		piThinkingLevel: piThinkingLevel as PiThinkingLevel | undefined,
@@ -211,10 +231,19 @@ async function saveDotEnvConfig(config: AppConfig): Promise<void> {
 	const env = parseEnvFile(content);
 	const urlKey = findExistingEnvKey(env, ["SONARR_BASE_URL", "SONARR_URL"], "SONARR_URL");
 	const apiKey = findExistingEnvKey(env, ["SONARR_API_KEY", "SONARR_API", "SONARR_TOKEN"], "SONARR_API");
+	const radarrUrlKey = findExistingEnvKey(env, ["RADARR_BASE_URL", "RADARR_URL"], "RADARR_URL");
+	const radarrApiKey = findExistingEnvKey(
+		env,
+		["RADARR_API_KEY", "RADARR_API", "RADARR_TOKEN"],
+		"RADARR_API",
+	);
 
 	let next = content;
+	next = setEnvValue(next, "ARR_SERVICE", config.activeService);
 	next = setEnvValue(next, urlKey, config.sonarrBaseUrl);
 	next = setEnvValue(next, apiKey, config.sonarrApiKey);
+	next = setEnvValue(next, radarrUrlKey, config.radarrBaseUrl);
+	next = setEnvValue(next, radarrApiKey, config.radarrApiKey);
 	next = setEnvValue(next, "PI_PROVIDER", config.piProvider);
 	next = setEnvValue(next, "PI_MODEL", config.piModel);
 	next = setEnvValue(next, "PI_THINKING_LEVEL", config.piThinkingLevel);
@@ -236,8 +265,11 @@ export async function loadConfig(): Promise<AppConfig> {
 export async function saveConfig(input: SaveConfigInput): Promise<PublicConfig> {
 	const current = await loadConfig();
 	const next = normalizeConfig({
+		activeService: input.activeService,
 		sonarrBaseUrl: input.sonarrBaseUrl,
 		sonarrApiKey: input.sonarrApiKey?.trim() ? input.sonarrApiKey : current.sonarrApiKey,
+		radarrBaseUrl: input.radarrBaseUrl,
+		radarrApiKey: input.radarrApiKey?.trim() ? input.radarrApiKey : current.radarrApiKey,
 		piProvider: input.piProvider,
 		piModel: input.piModel,
 		piThinkingLevel: input.piThinkingLevel ?? current.piThinkingLevel,
@@ -250,14 +282,21 @@ export async function saveConfig(input: SaveConfigInput): Promise<PublicConfig> 
 }
 
 export function toPublicConfig(config: AppConfig): PublicConfig {
+	const configured =
+		config.activeService === "sonarr"
+			? config.sonarrBaseUrl.length > 0 && config.sonarrApiKey.length > 0
+			: config.radarrBaseUrl.length > 0 && config.radarrApiKey.length > 0;
 	return {
+		activeService: config.activeService,
 		sonarrBaseUrl: config.sonarrBaseUrl,
 		hasSonarrApiKey: config.sonarrApiKey.length > 0,
+		radarrBaseUrl: config.radarrBaseUrl,
+		hasRadarrApiKey: config.radarrApiKey.length > 0,
 		piProvider: config.piProvider,
 		piModel: config.piModel,
 		piThinkingLevel: config.piThinkingLevel,
 		autoImportConfidence: config.autoImportConfidence,
 		autoResolveParallelism: config.autoResolveParallelism,
-		configured: config.sonarrBaseUrl.length > 0 && config.sonarrApiKey.length > 0,
+		configured,
 	};
 }

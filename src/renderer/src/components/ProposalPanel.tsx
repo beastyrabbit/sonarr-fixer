@@ -37,6 +37,7 @@ export function ProposalPanel({
 	analyzing,
 	applying,
 	applyBusy,
+	testMode,
 }: {
 	proposal: ResolutionProposal | null;
 	analysis: AnalysisResult | null;
@@ -49,8 +50,10 @@ export function ProposalPanel({
 	analyzing: boolean;
 	applying: boolean;
 	applyBusy: boolean;
+	testMode: boolean;
 }) {
-	const actionsLocked = analyzing || applyBusy;
+	const actionsLocked = analyzing || applyBusy || testMode;
+	const serviceName = queueItem?.service === "radarr" ? "Radarr" : "Sonarr";
 	const activeProposal = proposal ?? emptyProposal;
 	const issues = analysis?.validation.issues ?? [];
 	const queueRemovalOptions = activeProposal.queueRemovalOptions;
@@ -141,7 +144,7 @@ export function ProposalPanel({
 	const sonarrIssueLines =
 		statusMessages.length > 0
 			? statusMessages
-			: [activeProposal.sonarrIssueSummary || fallbackIssue || "No Sonarr issue loaded."];
+			: [activeProposal.issueSummary || fallbackIssue || `No ${serviceName} issue loaded.`];
 	const sonarrFlaggedLine = sonarrIssueLines.length > 1 ? sonarrIssueLines[1] : sonarrIssueLines[0];
 	const sonarrFlaggedDetail =
 		sonarrIssueLines.length > 1 ? [sonarrIssueLines[0], ...sonarrIssueLines.slice(2)] : [];
@@ -149,7 +152,7 @@ export function ProposalPanel({
 		? [candidateEpisodeText(primaryCandidate), absoluteText(primaryCandidate.absoluteEpisodeNumbers)]
 				.filter(Boolean)
 				.join(" / ")
-		: "No Sonarr candidate loaded.";
+		: `No ${serviceName} candidate loaded.`;
 	const alternateSonarrMatch =
 		sonarrMatches[0] && primaryCandidate && sonarrMatches[0].id !== primaryCandidate.id
 			? `Queue-target parsed candidate: ${candidateTitle(sonarrMatches[0])} -> ${[
@@ -165,16 +168,18 @@ export function ProposalPanel({
 		}
 		if (activeProposal.action === "import_candidates" && primaryImport) {
 			if (selectedCandidates.length > 1) {
-				return `Import ${selectedCandidates.length} files as mapped episodes`;
+				return queueItem?.service === "radarr"
+					? `Import ${selectedCandidates.length} selected files`
+					: `Import ${selectedCandidates.length} files as mapped episodes`;
 			}
-			return `Import as ${importTargetText(primaryImport.episodeIds, queueItem)}`;
+			return `Import as ${importTargetText(primaryImport.episodeIds, queueItem, primaryImport.movieId)}`;
 		}
 		if (activeProposal.action === "import_candidates") {
-			return "Import selected file, but no explicit episode mapping is visible.";
+			return `Import selected file, but no explicit ${queueItem?.service === "radarr" ? "movie" : "episode"} mapping is visible.`;
 		}
 		if (activeProposal.action === "remove_queue_item") {
 			return removalWillBlocklist
-				? "Delete from the download client, blocklist the release, and let Sonarr search again."
+				? `Delete from the download client, blocklist the release, and let ${serviceName} search again.`
 				: "Remove this queue item.";
 		}
 		if (activeProposal.action === "ignore_queue_item") {
@@ -189,6 +194,11 @@ export function ProposalPanel({
 					<div className="panel-title">Auto-resolve</div>
 					<div className="status-title">{verdict.title}</div>
 					<div className="verdict-detail">{verdict.detail}</div>
+					{testMode && (
+						<div className="dry-run-notice">
+							Dry run is active. Analysis is live; imports and queue changes are blocked.
+						</div>
+					)}
 				</div>
 				<div className="status-side">
 					<div className="hero-metrics">
@@ -248,13 +258,13 @@ export function ProposalPanel({
 			<section className="decision-flow">
 				<DecisionRow label="File" value={fileLine} detail={fileDetail} />
 				<DecisionRow
-					label="Sonarr flagged"
+					label={`${serviceName} flagged`}
 					value={sonarrFlaggedLine}
 					detail={sonarrFlaggedDetail}
 					tone="warning"
 				/>
 				<DecisionRow
-					label="Sonarr suggests"
+					label={`${serviceName} suggests`}
 					value={sonarrSuggestion}
 					detail={[
 						primaryCandidate ? candidateDetailText(primaryCandidate) || "-" : "",
@@ -327,7 +337,7 @@ export function ProposalPanel({
 					)}
 				</div>
 				<div className="detail-column">
-					<div className="block-label">Sonarr parsed match</div>
+					<div className="block-label">{serviceName} parsed match</div>
 					<CandidateSummary
 						candidate={sonarrMatches[0]}
 						empty={

@@ -17,6 +17,7 @@ export function episodeLabel(episode: SonarrEpisodeRecord): string {
 export function compactCandidate(candidate: ManualImportCandidate) {
 	return {
 		id: candidate.id,
+		service: candidate.service,
 		path: candidate.path,
 		relativePath: candidate.relativePath,
 		folderName: candidate.folderName,
@@ -25,6 +26,9 @@ export function compactCandidate(candidate: ManualImportCandidate) {
 		seriesId: candidate.seriesId,
 		seriesTitle: candidate.seriesTitle,
 		seasonNumber: candidate.seasonNumber,
+		movieId: candidate.movieId,
+		movieTitle: candidate.movieTitle,
+		movieYear: candidate.movieYear,
 		episodeIds: candidate.episodeIds,
 		absoluteEpisodeNumbers: candidate.absoluteEpisodeNumbers,
 		episodeLabels: candidate.episodeLabels,

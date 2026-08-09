@@ -1,8 +1,40 @@
 export type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type MediaService = "sonarr" | "radarr";
+
+export interface PiModelOption {
+	provider: string;
+	model: string;
+	label: string;
+	description?: string;
+	isDefault?: boolean;
+}
+
+export interface PiModelCatalog {
+	options: PiModelOption[];
+	source: "codex-app-server" | "pi-registry";
+	warning?: string;
+}
+
+export interface TestConnectionInput {
+	service: MediaService;
+	baseUrl: string;
+	apiKey?: string;
+}
+
+export interface TestConnectionResult {
+	ok: boolean;
+	service: MediaService;
+	message: string;
+	version?: string;
+	instanceName?: string;
+}
 
 export interface AppConfig {
+	activeService: MediaService;
 	sonarrBaseUrl: string;
 	sonarrApiKey: string;
+	radarrBaseUrl: string;
+	radarrApiKey: string;
 	piProvider: string;
 	piModel: string;
 	piThinkingLevel: PiThinkingLevel;
@@ -11,8 +43,11 @@ export interface AppConfig {
 }
 
 export interface PublicConfig {
+	activeService: MediaService;
 	sonarrBaseUrl: string;
 	hasSonarrApiKey: boolean;
+	radarrBaseUrl: string;
+	hasRadarrApiKey: boolean;
 	piProvider: string;
 	piModel: string;
 	piThinkingLevel: PiThinkingLevel;
@@ -22,8 +57,11 @@ export interface PublicConfig {
 }
 
 export interface SaveConfigInput {
+	activeService: MediaService;
 	sonarrBaseUrl: string;
 	sonarrApiKey?: string;
+	radarrBaseUrl: string;
+	radarrApiKey?: string;
 	piProvider: string;
 	piModel: string;
 	piThinkingLevel?: PiThinkingLevel;
@@ -33,6 +71,7 @@ export interface SaveConfigInput {
 
 export interface QueueItem {
 	id: number;
+	service: MediaService;
 	title: string;
 	seriesId?: number;
 	seriesTitle?: string;
@@ -47,6 +86,9 @@ export interface QueueItem {
 	absoluteEpisodeNumbers: number[];
 	episodeLabels: string[];
 	seasonEpisode?: string;
+	movieId?: number;
+	movieTitle?: string;
+	movieYear?: number;
 	statusMessages: string[];
 	canAnalyze: boolean;
 	addedAt?: string;
@@ -54,6 +96,7 @@ export interface QueueItem {
 
 export interface ManualImportCandidate {
 	id: string;
+	service: MediaService;
 	path: string;
 	relativePath?: string;
 	folderName?: string;
@@ -62,6 +105,9 @@ export interface ManualImportCandidate {
 	seriesId?: number;
 	seriesTitle?: string;
 	seasonNumber?: number;
+	movieId?: number;
+	movieTitle?: string;
+	movieYear?: number;
 	episodeIds: number[];
 	absoluteEpisodeNumbers: number[];
 	episodeLabels: string[];
@@ -86,6 +132,7 @@ export type ProposalAction = "import_candidates" | "needs_review" | "ignore_queu
 export interface SelectedImport {
 	candidateId: string;
 	episodeIds: number[];
+	movieId?: number;
 	reason?: string;
 }
 
@@ -96,7 +143,7 @@ export interface ResolutionProposal {
 	selectedImports: SelectedImport[];
 	sampleCandidateIds: string[];
 	reason: string;
-	sonarrIssueSummary: string;
+	issueSummary: string;
 	evidence: string[];
 	warnings: string[];
 	queueRemovalOptions?: QueueRemovalOptions;
@@ -142,11 +189,34 @@ export interface QueueRemovalOptions {
 }
 
 export interface ResolverEvent {
-	type: "info" | "warning" | "error" | "pi" | "sonarr";
+	type: "info" | "warning" | "error" | "pi" | "sonarr" | "radarr";
 	message: string;
 	timestamp: string;
 	itemId?: number;
 	details?: unknown;
+}
+
+export interface DiagnosticExportInput {
+	formatVersion: 1;
+	exportedAt: string;
+	testMode: boolean;
+	runtime?: {
+		appVersion: string;
+		platform: string;
+		arch: string;
+	};
+	config: PublicConfig | null;
+	selectedQueueId?: number;
+	queue: QueueItem[];
+	analyses: AnalysisResult[];
+	events: ResolverEvent[];
+	history: unknown[];
+}
+
+export interface DiagnosticExportResult {
+	ok: boolean;
+	canceled: boolean;
+	path?: string;
 }
 
 export interface SonarrSystemStatus {
@@ -154,3 +224,5 @@ export interface SonarrSystemStatus {
 	instanceName?: string;
 	appName?: string;
 }
+
+export type ArrSystemStatus = SonarrSystemStatus;

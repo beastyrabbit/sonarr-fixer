@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { QueueItem } from "../../shared/types.js";
+import type { ManualImportCandidate, QueueItem, ResolutionProposal } from "../../shared/types.js";
 import { SonarrClient } from "./sonarr-client.js";
 
 const removalOptions = {
@@ -20,6 +20,7 @@ function jsonResponse(body: unknown): Response {
 function queueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 	return {
 		id: 1,
+		service: "sonarr",
 		title: "Queue item",
 		episodeIds: [],
 		absoluteEpisodeNumbers: [],
@@ -33,6 +34,21 @@ function queueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 describe("SonarrClient", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+	});
+
+	it("loads system status for connection tests", async () => {
+		const fetchMock = vi.fn(async () => jsonResponse({ version: "4.0.0", instanceName: "Series" }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const status = await new SonarrClient("http://sonarr.local/", "test-api-key").getSystemStatus();
+
+		expect(status).toEqual({ version: "4.0.0", instanceName: "Series" });
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://sonarr.local/api/v3/system/status",
+			expect.objectContaining({
+				headers: expect.objectContaining({ "X-Api-Key": "test-api-key" }),
+			}),
+		);
 	});
 
 	it("handles an empty successful queue removal response", async () => {
@@ -245,5 +261,115 @@ describe("SonarrClient", () => {
 			{ id: 1, name: "720p", minUpgradeFormatScore: 1 },
 		]);
 		await expect(client.getCustomFormats()).resolves.toEqual([{ id: 311, name: "German" }]);
+	});
+
+	function importCandidate(overrides: Partial<ManualImportCandidate> = {}): ManualImportCandidate {
+		return {
+			id: "candidate_1",
+			service: "sonarr",
+			path: "/downloads/Show.S01E01/Show.S01E01.mkv",
+			seriesId: 5,
+			episodeIds: [101],
+			absoluteEpisodeNumbers: [],
+			episodeLabels: ["S01E01"],
+			quality: { quality: { name: "WEBDL-1080p" } },
+			languages: [{ name: "English" }],
+			languageLabels: ["English"],
+			rejections: [],
+			isLikelySample: false,
+			...overrides,
+		};
+	}
+
+	function importProposal(): ResolutionProposal {
+		return {
+			action: "import_candidates",
+			confidence: 0.9,
+			selectedCandidateIds: ["candidate_1"],
+			selectedImports: [{ candidateId: "candidate_1", episodeIds: [101] }],
+			sampleCandidateIds: [],
+			reason: "Fallback import.",
+			issueSummary: "Import blocked by Sonarr.",
+			evidence: [],
+			warnings: [],
+		};
+	}
+
+	it("blocks imports that would replace a German-audio file with a non-German candidate", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (String(url).includes("/api/v3/episode?")) {
+				return jsonResponse([
+					{
+						id: 101,
+						episodeFile: {
+							relativePath: "Season 01/Show - S01E01 [German DL].mkv",
+							languages: [{ name: "German" }, { name: "English" }],
+						},
+					},
+				]);
+			}
+			return new Response("not found", { status: 404, statusText: "Not Found" });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await new SonarrClient("http://sonarr.local/", "api-key").applyImportProposal(
+			queueItem({ episodeIds: [101] }),
+			[importCandidate()],
+			importProposal(),
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.message).toContain("Blocked language downgrade");
+		expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/v3/command"))).toBe(false);
+	});
+
+	it("imports a non-German candidate when the existing file also lacks German", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (String(url).includes("/api/v3/episode?")) {
+				return jsonResponse([
+					{
+						id: 101,
+						episodeFile: { relativePath: "Season 01/old.mkv", languages: [{ name: "English" }] },
+					},
+				]);
+			}
+			if (String(url).endsWith("/api/v3/command")) {
+				return jsonResponse({ id: 55 });
+			}
+			return new Response("not found", { status: 404, statusText: "Not Found" });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await new SonarrClient("http://sonarr.local/", "api-key").applyImportProposal(
+			queueItem({ episodeIds: [101] }),
+			[importCandidate()],
+			importProposal(),
+		);
+
+		expect(result).toMatchObject({ ok: true, commandId: 55 });
+	});
+
+	it("skips the existing-file lookup when the candidate includes German", async () => {
+		const fetchMock = vi.fn(async (url: string) => {
+			if (String(url).endsWith("/api/v3/command")) {
+				return jsonResponse({ id: 56 });
+			}
+			return new Response("not found", { status: 404, statusText: "Not Found" });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await new SonarrClient("http://sonarr.local/", "api-key").applyImportProposal(
+			queueItem({ episodeIds: [101] }),
+			[
+				importCandidate({
+					languages: [{ name: "German" }, { name: "English" }],
+					languageLabels: ["German", "English"],
+				}),
+			],
+			importProposal(),
+		);
+
+		expect(result).toMatchObject({ ok: true, commandId: 56 });
+		expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/v3/episode?"))).toBe(false);
 	});
 });

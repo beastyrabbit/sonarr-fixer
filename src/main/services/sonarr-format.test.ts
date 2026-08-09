@@ -19,6 +19,7 @@ describe("episodeLabel", () => {
 describe("compactCandidate", () => {
 	const candidate: ManualImportCandidate = {
 		id: "candidate_1",
+		service: "sonarr",
 		path: "/downloads/show/s01/episode.mkv",
 		relativePath: "episode.mkv",
 		folderName: "show",

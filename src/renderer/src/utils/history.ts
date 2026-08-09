@@ -14,5 +14,5 @@ export function proposalActionLabel(action: ResolutionProposal["action"]): strin
 }
 
 export function historySummary(result: AnalysisResult): string {
-	return result.proposal.reason || result.proposal.sonarrIssueSummary || "No decision reason recorded.";
+	return result.proposal.reason || result.proposal.issueSummary || "No decision reason recorded.";
 }

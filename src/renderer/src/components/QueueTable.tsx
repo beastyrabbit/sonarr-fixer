@@ -25,6 +25,7 @@ export function QueueTable({
 	onSelect: (item: QueueItem) => void;
 }) {
 	const groups = groupQueueByIssue(queue);
+	const isRadarr = queue[0]?.service === "radarr";
 	const onRowKeyDown = (event: KeyboardEvent<HTMLTableRowElement>, item: QueueItem) => {
 		if (event.key === "Enter" || event.key === " ") {
 			event.preventDefault();
@@ -36,8 +37,8 @@ export function QueueTable({
 			<table>
 				<thead>
 					<tr>
-						<th>Series</th>
-						<th>Episode</th>
+						<th>{isRadarr ? "Movie" : "Series"}</th>
+						<th>{isRadarr ? "Year" : "Episode"}</th>
 						<th>Issue</th>
 						<th>Size</th>
 					</tr>

@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"description": "Power-user Sonarr import queue fixer powered by Pi.",
+	"description": "Power-user Sonarr and Radarr import queue fixer powered by Pi.",
 	"license": "MIT",
 	"main": "out/main/index.js",
 	"scripts": {

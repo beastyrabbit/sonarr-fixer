@@ -13,7 +13,7 @@ describe("createProposalTool", () => {
 			selectedImports: [{ candidateId: "candidate_1", episodeIds: [101] }],
 			sampleCandidateIds: ["candidate_2"],
 			reason: "candidate_1 is the episode; candidate_2 is sample",
-			sonarrIssueSummary: "Sonarr warning was caused by the sample file.",
+			issueSummary: "Sonarr warning was caused by the sample file.",
 			evidence: ["candidate_1 has the target episode id."],
 			warnings: [],
 		};
@@ -40,7 +40,7 @@ describe("createProposalTool", () => {
 				selectedImports: [{ candidateId: "candidate_1", episodeIds: [101] }],
 				sampleCandidateIds: [],
 				reason: "correct file",
-				sonarrIssueSummary: "Sonarr warning does not block candidate_1.",
+				issueSummary: "Sonarr warning does not block candidate_1.",
 				evidence: ["candidate_1 has usable metadata."],
 				warnings: [],
 			},
@@ -73,9 +73,9 @@ describe("createProposalTool", () => {
 					skipRedownload: false,
 					changeCategory: false,
 				},
-				reason: "Candidate is not German, so Sonarr should search for a replacement.",
-				sonarrIssueSummary: "The visible release is not useful for this library.",
-				evidence: ["Candidate languages do not include German."],
+				reason: "Candidate parses as the wrong series, so Sonarr should search for a replacement.",
+				issueSummary: "The visible release is not useful for this library.",
+				evidence: ["Candidate file maps to a different series than the queue target."],
 				warnings: [],
 			},
 			undefined,
@@ -112,7 +112,7 @@ describe("createProposalTool", () => {
 					changeCategory: false,
 				},
 				reason: "The existing episode file already has a better custom format score.",
-				sonarrIssueSummary: "Sonarr rejected the candidate as a non-upgrade.",
+				issueSummary: "Sonarr rejected the candidate as a non-upgrade.",
 				evidence: ["Existing score 12905 is above candidate score 10012."],
 				warnings: [],
 			},
@@ -127,5 +127,29 @@ describe("createProposalTool", () => {
 			skipRedownload: false,
 			changeCategory: false,
 		});
+	});
+
+	it("uses a movie id mapping for Radarr proposals", () => {
+		const tool = createProposalTool(["candidate_1"], () => undefined, "radarr");
+		const valid = {
+			action: "import_candidates",
+			confidence: 0.95,
+			selectedCandidateIds: ["candidate_1"],
+			selectedImports: [{ candidateId: "candidate_1", movieId: 42 }],
+			sampleCandidateIds: [],
+			reason: "The file matches the queued movie.",
+			issueSummary: "Radarr could not import it automatically.",
+			evidence: ["Movie id 42 matches."],
+			warnings: [],
+		};
+
+		expect(tool.name).toBe("propose_radarr_resolution");
+		expect(Value.Check(tool.parameters, valid)).toBe(true);
+		expect(
+			Value.Check(tool.parameters, {
+				...valid,
+				selectedImports: [{ candidateId: "candidate_1", episodeIds: [] }],
+			}),
+		).toBe(false);
 	});
 });

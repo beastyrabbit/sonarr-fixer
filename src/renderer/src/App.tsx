@@ -1,6 +1,8 @@
 import {
 	ChevronDown,
 	ChevronUp,
+	FileJson2,
+	FlaskConical,
 	Inbox,
 	MousePointerClick,
 	Play,
@@ -33,8 +35,12 @@ import { IMPORT_REFRESH_DELAY_MS, ignoreRemovalOptions, manualRemovalOptions } f
 import { useConfirm } from "./hooks/useConfirm.js";
 import { useToasts } from "./hooks/useToasts.js";
 import type { HistoryEntry, UiEvent } from "./types.js";
-import { autoRemovalOptionsForResult, selectedImportEpisodeIds } from "./utils/candidates.js";
-import { compactDetails } from "./utils/format.js";
+import {
+	autoRemovalOptionsForResult,
+	selectedImportEpisodeIds,
+	selectedImportMovieIds,
+} from "./utils/candidates.js";
+import { compactDetails, cx } from "./utils/format.js";
 import { historySummary, proposalActionLabel } from "./utils/history.js";
 import {
 	issueTypesForQueue,
@@ -67,10 +73,12 @@ export function App() {
 	const [analyzingIds, setAnalyzingIds] = useState<ReadonlySet<number>>(new Set());
 	const [applyingId, setApplyingId] = useState<number | null>(null);
 	const [autoApply, setAutoApply] = useState(false);
+	const [testMode, setTestMode] = useState(true);
 	const autoApplyRef = useRef(autoApply);
 	const cancelledIds = useRef(new Set<number>());
 	const importRefreshTimers = useRef<number[]>([]);
-	const hasAutoLoadedQueue = useRef(false);
+	const lastAutoLoadedService = useRef<string | undefined>(undefined);
+	const previousService = useRef<string | undefined>(undefined);
 	const { toasts, pushToast, dismissToast } = useToasts();
 	const { confirmRequest, confirm, resolveConfirm } = useConfirm();
 
@@ -83,18 +91,17 @@ export function App() {
 	const autoResolveParallelism = normalizedParallelism(config?.autoResolveParallelism);
 	const actionableQueueCount = queue.filter((item) => item.canAnalyze).length;
 	const selectedItemAnalyzing = Boolean(selectedItem && analyzingIds.has(selectedItem.id));
+	const serviceName = config?.activeService === "radarr" ? "Radarr" : "Sonarr";
 
 	const appendEvent = useCallback((event: ResolverEvent) => {
-		setEvents((current) =>
-			[
-				{
-					...event,
-					key: crypto.randomUUID(),
-					timeLabel: new Date(event.timestamp).toLocaleTimeString(),
-				},
-				...current,
-			].slice(0, 240),
-		);
+		setEvents((current) => [
+			{
+				...event,
+				key: crypto.randomUUID(),
+				timeLabel: new Date(event.timestamp).toLocaleTimeString(),
+			},
+			...current,
+		]);
 	}, []);
 
 	const appendLocalEvent = useCallback(
@@ -106,17 +113,15 @@ export function App() {
 
 	const appendHistory = useCallback((entry: Omit<HistoryEntry, "id" | "timestamp" | "timeLabel">) => {
 		const timestamp = new Date().toISOString();
-		setHistoryEntries((current) =>
-			[
-				{
-					...entry,
-					id: crypto.randomUUID(),
-					timestamp,
-					timeLabel: new Date(timestamp).toLocaleTimeString(),
-				},
-				...current,
-			].slice(0, 200),
-		);
+		setHistoryEntries((current) => [
+			{
+				...entry,
+				id: crypto.randomUUID(),
+				timestamp,
+				timeLabel: new Date(timestamp).toLocaleTimeString(),
+			},
+			...current,
+		]);
 	}, []);
 
 	useEffect(() => {
@@ -138,10 +143,46 @@ export function App() {
 	}, [autoApply]);
 
 	useEffect(() => {
+		if (!testMode) {
+			return;
+		}
+		autoApplyRef.current = false;
+		setAutoApply(false);
+	}, [testMode]);
+
+	useEffect(() => {
 		if (config) {
 			setConfigOpen(!config.configured);
 		}
 	}, [config]);
+
+	useEffect(() => {
+		if (!config || !previousService.current) {
+			previousService.current = config?.activeService;
+			return;
+		}
+		if (previousService.current === config.activeService) {
+			return;
+		}
+		previousService.current = config.activeService;
+		for (const itemId of analyzingIds) {
+			cancelledIds.current.add(itemId);
+		}
+		if (analyzingIds.size > 0) {
+			void window.sonarrFixer.cancelRun();
+		}
+		for (const timer of importRefreshTimers.current) {
+			window.clearTimeout(timer);
+		}
+		importRefreshTimers.current = [];
+		setQueue([]);
+		setSelectedQueueId(undefined);
+		setCandidates([]);
+		setAnalysisByItem(new Map());
+		setSelectedCandidateIds([]);
+		setAnalyzingIds(new Set());
+		setHistoryOpen(false);
+	}, [config, analyzingIds]);
 
 	useEffect(() => {
 		if (selectedItem && !selectedQueueId) {
@@ -170,28 +211,28 @@ export function App() {
 			await fetchAndReconcileQueue();
 		} catch (error) {
 			const message = errorText(error);
-			appendLocalEvent({ type: "error", message: `Could not load Sonarr queue: ${message}` });
-			pushToast("error", `Could not load Sonarr queue: ${message}`);
+			appendLocalEvent({ type: "error", message: `Could not load ${serviceName} queue: ${message}` });
+			pushToast("error", `Could not load ${serviceName} queue: ${message}`);
 		} finally {
 			setQueueLoading(false);
 		}
-	}, [appendLocalEvent, pushToast, fetchAndReconcileQueue]);
+	}, [appendLocalEvent, pushToast, fetchAndReconcileQueue, serviceName]);
 
 	const refreshQueueQuietly = fetchAndReconcileQueue;
 
 	useEffect(() => {
-		if (!config?.configured || hasAutoLoadedQueue.current) {
+		if (!config?.configured || lastAutoLoadedService.current === config.activeService) {
 			return;
 		}
-		hasAutoLoadedQueue.current = true;
+		lastAutoLoadedService.current = config.activeService;
 		void loadQueue();
-	}, [config?.configured, loadQueue]);
+	}, [config?.activeService, config?.configured, loadQueue]);
 
 	const scheduleImportRefresh = () => {
 		void refreshQueueQuietly().catch((error) => {
 			appendLocalEvent({
 				type: "error",
-				message: `Could not refresh Sonarr queue after action: ${errorText(error)}`,
+				message: `Could not refresh ${serviceName} queue after action: ${errorText(error)}`,
 			});
 		});
 		const timer = window.setTimeout(() => {
@@ -199,7 +240,7 @@ export function App() {
 			void refreshQueueQuietly().catch((error) => {
 				appendLocalEvent({
 					type: "error",
-					message: `Could not refresh Sonarr queue after delay: ${errorText(error)}`,
+					message: `Could not refresh ${serviceName} queue after delay: ${errorText(error)}`,
 				});
 			});
 		}, IMPORT_REFRESH_DELAY_MS);
@@ -241,6 +282,10 @@ export function App() {
 	};
 
 	const hideImportedQueueItems = (item: QueueItem, proposal: ResolutionProposal) => {
+		if (item.service === "radarr") {
+			hideQueuedImport(item.id);
+			return;
+		}
 		const importedEpisodeIds = new Set(selectedImportEpisodeIds(proposal));
 		if (importedEpisodeIds.size === 0) {
 			hideQueuedImport(item.id);
@@ -361,6 +406,17 @@ export function App() {
 		if (!item || !result) {
 			return false;
 		}
+		if (testMode) {
+			appendLocalEvent({
+				type: "info",
+				itemId: item.id,
+				message: "Dry run: import was not sent.",
+			});
+			if (interactive) {
+				pushToast("info", "Dry run is active. No import was sent.");
+			}
+			return false;
+		}
 		if (interactive) {
 			setApplyingId(item.id);
 		}
@@ -373,6 +429,7 @@ export function App() {
 				),
 			};
 			const importedEpisodeIds = selectedImportEpisodeIds(proposalToApply);
+			const importedMovieIds = selectedImportMovieIds(proposalToApply);
 			const applyResult = await window.sonarrFixer.applyImportProposal({
 				queueItem: item,
 				candidates: result.candidates,
@@ -384,13 +441,17 @@ export function App() {
 				itemTitle: itemTitle(item),
 				target: targetDetailText(item),
 				action: "Import",
-				source: "Sonarr",
+				source: serviceName,
 				confidence: result.proposal.confidence,
 				status: applyResult.ok ? "applied" : "failed",
 				summary: applyResult.message,
 				details: compactDetails([
 					`${proposalToApply.selectedCandidateIds.length} file(s)`,
-					importedEpisodeIds.length ? `episode ids ${importedEpisodeIds.join(", ")}` : undefined,
+					importedMovieIds.length
+						? `movie ids ${importedMovieIds.join(", ")}`
+						: importedEpisodeIds.length
+							? `episode ids ${importedEpisodeIds.join(", ")}`
+							: undefined,
 				]),
 			});
 			if (applyResult.ok) {
@@ -399,10 +460,10 @@ export function App() {
 					scheduleImportRefresh();
 				}
 				if (interactive) {
-					pushToast("success", applyResult.message || "Import command sent to Sonarr.");
+					pushToast("success", applyResult.message || `Import command sent to ${serviceName}.`);
 				}
 			} else if (interactive) {
-				pushToast("error", applyResult.message || "Sonarr rejected the import.");
+				pushToast("error", applyResult.message || `${serviceName} rejected the import.`);
 			}
 			return applyResult.ok;
 		} catch (error) {
@@ -421,7 +482,7 @@ export function App() {
 				itemTitle: itemTitle(item),
 				target: targetDetailText(item),
 				action: "Import",
-				source: "Sonarr",
+				source: serviceName,
 				confidence: result.proposal.confidence,
 				status: "failed",
 				summary: message,
@@ -450,18 +511,29 @@ export function App() {
 		refreshAfter?: boolean;
 		requireConfirm?: boolean;
 	}) => {
+		if (testMode) {
+			appendLocalEvent({
+				type: "info",
+				itemId: item.id,
+				message: "Dry run: queue removal was not sent.",
+			});
+			if (interactive) {
+				pushToast("info", "Dry run is active. The queue was not changed.");
+			}
+			return false;
+		}
 		if (requireConfirm) {
 			const confirmed = await confirm(
 				mode === "ignore"
 					? {
 							title: "Ignore queue item",
-							body: `Remove "${itemTitle(item)}" from Sonarr's queue? The download stays untouched in the download client.`,
+							body: `Remove "${itemTitle(item)}" from ${serviceName}'s queue? The download stays untouched in the download client.`,
 							confirmLabel: "Ignore",
 						}
 					: options.blocklist
 						? {
 								title: "Delete and blocklist",
-								body: `Remove "${itemTitle(item)}" from the queue, delete the download from the client, and blocklist this release so Sonarr searches for a replacement?`,
+								body: `Remove "${itemTitle(item)}" from the queue, delete the download from the client, and blocklist this release so ${serviceName} searches for a replacement?`,
 								confirmLabel: "Delete + Block",
 								danger: true,
 							}
@@ -487,14 +559,14 @@ export function App() {
 			`changeCategory=${options.changeCategory}`,
 		];
 		try {
-			const result = await window.sonarrFixer.removeQueueItem(item.id, options);
+			const result = await window.sonarrFixer.removeQueueItem(item, options);
 			appendHistory({
 				kind: mode,
 				itemId: item.id,
 				itemTitle: itemTitle(item),
 				target: targetDetailText(item),
 				action: actionLabel,
-				source: "Sonarr",
+				source: serviceName,
 				status: result.ok ? "applied" : "failed",
 				summary: result.message,
 				details: removalDetails,
@@ -507,11 +579,12 @@ export function App() {
 				if (interactive) {
 					pushToast(
 						"success",
-						result.message || (mode === "ignore" ? "Queue item ignored." : "Queue item removed from Sonarr."),
+						result.message ||
+							(mode === "ignore" ? "Queue item ignored." : `Queue item removed from ${serviceName}.`),
 					);
 				}
 			} else if (interactive) {
-				pushToast("error", result.message || "Sonarr rejected the queue removal.");
+				pushToast("error", result.message || `${serviceName} rejected the queue removal.`);
 			}
 			return result.ok;
 		} catch (error) {
@@ -530,7 +603,7 @@ export function App() {
 				itemTitle: itemTitle(item),
 				target: targetDetailText(item),
 				action: actionLabel,
-				source: "Sonarr",
+				source: serviceName,
 				status: "failed",
 				summary: message,
 				details: removalDetails,
@@ -652,11 +725,36 @@ export function App() {
 		pushToast("info", "Cancelled all running analyses.");
 	};
 
+	const exportDiagnostics = async () => {
+		try {
+			const result = await window.sonarrFixer.exportDiagnostics({
+				formatVersion: 1,
+				exportedAt: new Date().toISOString(),
+				testMode,
+				config,
+				selectedQueueId: selectedItem?.id,
+				queue,
+				analyses: [...analysisByItem.values()],
+				events: events.map(({ key: _key, timeLabel: _timeLabel, ...event }) => event),
+				history: historyEntries,
+			});
+			if (result.ok) {
+				pushToast("success", "Full diagnostic log exported.");
+				appendLocalEvent({
+					type: "info",
+					message: "Exported a redacted diagnostic log.",
+				});
+			}
+		} catch (error) {
+			pushToast("error", `Could not export diagnostic log: ${errorText(error)}`);
+		}
+	};
+
 	const queuePaneContent = !config?.configured ? (
 		<EmptyState
 			icon={Plug}
-			title="Connect to Sonarr"
-			body="Add your Sonarr URL and API key to load the stuck-import queue."
+			title={`Connect to ${serviceName}`}
+			body={`Add your ${serviceName} URL and API key to load the stuck-import queue.`}
 			action={
 				<button type="button" className="button primary" onClick={() => setConfigOpen(true)}>
 					Open settings
@@ -708,6 +806,7 @@ export function App() {
 					analyzing={selectedItemAnalyzing}
 					applying={applyingId === selectedItem.id}
 					applyBusy={applyingId !== null}
+					testMode={testMode}
 					onApply={() => applyProposal()}
 					onRemove={removeQueueItem}
 					onIgnore={ignoreQueueItem}
@@ -734,7 +833,9 @@ export function App() {
 				/>
 			)}
 			<details className="candidate-debug">
-				<summary>Candidate data from Sonarr ({candidates.length})</summary>
+				<summary>
+					Candidate data from {serviceName} ({candidates.length})
+				</summary>
 				<CandidateTable
 					candidates={candidates}
 					selectedCandidateIds={selectedCandidateIds}
@@ -807,10 +908,29 @@ export function App() {
 							<StopCircle size={16} />
 							<span>Stop</span>
 						</button>
+						<label className={cx("toggle dry-run-toggle", testMode && "active")}>
+							<input
+								type="checkbox"
+								checked={testMode}
+								onChange={(event) => {
+									const enabled = event.target.checked;
+									setTestMode(enabled);
+									appendLocalEvent({
+										type: enabled ? "info" : "warning",
+										message: enabled
+											? "Dry run enabled. Imports and queue changes are blocked."
+											: "Dry run disabled. Reviewed actions can now change the active manager.",
+									});
+								}}
+							/>
+							<FlaskConical size={14} />
+							<span>Dry run</span>
+						</label>
 						<label className="toggle">
 							<input
 								type="checkbox"
 								checked={autoApply}
+								disabled={testMode}
 								onChange={(event) => {
 									autoApplyRef.current = event.target.checked;
 									setAutoApply(event.target.checked);
@@ -823,7 +943,7 @@ export function App() {
 				</section>
 				<section className="pane review-pane">
 					<div className="pane-head">
-						<h2>{historyOpen ? "History" : "Auto Resolve Review"}</h2>
+						<h2>{historyOpen ? "History" : testMode ? "Dry Run Review" : "Auto Resolve Review"}</h2>
 						<span>
 							{historyOpen
 								? `${historyEntries.length} entries`
@@ -836,23 +956,34 @@ export function App() {
 				</section>
 			</main>
 			<section className="log-pane">
-				<button
-					type="button"
-					className="log-toggle"
-					aria-expanded={logOpen}
-					onClick={() => setLogOpen((value) => !value)}
-				>
-					<span className="log-title">Log</span>
-					<span className="log-meta">
-						{analyzingIds.size > 0 ? `analyzing ${analyzingIds.size}` : `${events.length} events`}
-					</span>
-					{!logOpen && events[0] && (
-						<span className="log-latest truncate">
-							{events[0].timeLabel} · {events[0].message}
+				<div className="log-toolbar">
+					<button
+						type="button"
+						className="log-toggle"
+						aria-expanded={logOpen}
+						onClick={() => setLogOpen((value) => !value)}
+					>
+						<span className="log-title">Diagnostic log</span>
+						<span className="log-meta">
+							{analyzingIds.size > 0 ? `analyzing ${analyzingIds.size}` : `${events.length} events`}
 						</span>
-					)}
-					{logOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-				</button>
+						{!logOpen && events[0] && (
+							<span className="log-latest truncate">
+								{events[0].timeLabel} · {events[0].message}
+							</span>
+						)}
+						{logOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+					</button>
+					<button
+						type="button"
+						className="button log-export"
+						onClick={() => void exportDiagnostics()}
+						title="Export queue, candidates, AI tool results, proposal, validation, and history"
+					>
+						<FileJson2 size={15} />
+						<span>Export full log</span>
+					</button>
+				</div>
 				{logOpen && <EventLog events={events} />}
 			</section>
 			<Toasts toasts={toasts} onDismiss={dismissToast} />

@@ -5,6 +5,7 @@ import { resolveImportEpisodeIds, validateProposalForImport } from "./validation
 function candidate(overrides: Partial<ManualImportCandidate> = {}): ManualImportCandidate {
 	return {
 		id: "candidate_1",
+		service: "sonarr",
 		path: "/downloads/show/episode.mkv",
 		episodeIds: [101],
 		absoluteEpisodeNumbers: [1],
@@ -22,6 +23,7 @@ function candidate(overrides: Partial<ManualImportCandidate> = {}): ManualImport
 function queueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 	return {
 		id: 1,
+		service: "sonarr",
 		title: "Queue item",
 		episodeIds: [101],
 		absoluteEpisodeNumbers: [1],
@@ -39,7 +41,7 @@ const importProposal: ResolutionProposal = {
 	selectedImports: [{ candidateId: "candidate_1", episodeIds: [101], reason: "AI selected this mapping." }],
 	sampleCandidateIds: [],
 	reason: "Looks correct.",
-	sonarrIssueSummary: "Sonarr complained about a manual import warning.",
+	issueSummary: "Sonarr complained about a manual import warning.",
 	evidence: ["candidate_1 matches the target episode."],
 	warnings: [],
 };
@@ -136,5 +138,60 @@ describe("validateProposalForImport", () => {
 			selectedImports: [],
 		});
 		expect(result.ok).toBe(true);
+	});
+
+	it("validates Radarr imports against an explicit movie id", () => {
+		const radarrCandidate = candidate({
+			service: "radarr",
+			seriesId: 42,
+			seriesTitle: "Arrival",
+			movieId: 42,
+			movieTitle: "Arrival",
+			movieYear: 2016,
+			episodeIds: [42],
+			episodeLabels: ["Arrival (2016)"],
+		});
+		const result = validateProposalForImport(
+			[radarrCandidate],
+			{
+				...importProposal,
+				selectedImports: [{ candidateId: "candidate_1", episodeIds: [], movieId: 42 }],
+			},
+			queueItem({
+				service: "radarr",
+				movieId: 42,
+				movieTitle: "Arrival",
+				movieYear: 2016,
+				episodeIds: [42],
+				episodeLabels: ["Arrival (2016)"],
+			}),
+		);
+
+		expect(result).toEqual({ ok: true, issues: [] });
+	});
+
+	it("blocks multiple Radarr feature files for one queue item", () => {
+		const first = candidate({
+			service: "radarr",
+			seriesId: 42,
+			movieId: 42,
+			episodeIds: [42],
+		});
+		const second = { ...first, id: "candidate_2", path: "/downloads/show/second.mkv" };
+		const result = validateProposalForImport(
+			[first, second],
+			{
+				...importProposal,
+				selectedCandidateIds: ["candidate_1", "candidate_2"],
+				selectedImports: [
+					{ candidateId: "candidate_1", episodeIds: [], movieId: 42 },
+					{ candidateId: "candidate_2", episodeIds: [], movieId: 42 },
+				],
+			},
+			queueItem({ service: "radarr", movieId: 42, episodeIds: [42] }),
+		);
+
+		expect(result.ok).toBe(false);
+		expect(result.issues.some((issue) => issue.message.includes("one feature file"))).toBe(true);
 	});
 });

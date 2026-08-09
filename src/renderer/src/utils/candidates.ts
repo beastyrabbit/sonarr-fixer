@@ -22,6 +22,13 @@ export function candidateFolder(candidate: ManualImportCandidate): string {
 }
 
 export function candidateEpisodeText(candidate: ManualImportCandidate): string {
+	if (candidate.service === "radarr") {
+		return candidate.movieTitle
+			? `${candidate.movieTitle}${candidate.movieYear ? ` (${candidate.movieYear})` : ""}`
+			: candidate.movieId
+				? `movie id ${candidate.movieId}`
+				: "-";
+	}
 	if (candidate.episodeLabels.length > 0) {
 		return candidate.episodeLabels.join(", ");
 	}
@@ -50,7 +57,13 @@ function sameNumberSet(left: number[], right: number[]): boolean {
 	return left.every((value) => rightSet.has(value));
 }
 
-export function importTargetText(episodeIds: number[], item?: QueueItem): string {
+export function importTargetText(episodeIds: number[], item?: QueueItem, movieId?: number): string {
+	if (item?.service === "radarr") {
+		const targetMovieId = movieId ?? item.movieId;
+		return targetMovieId
+			? `${item.movieTitle ?? "movie"}${item.movieYear ? ` (${item.movieYear})` : ""} / id ${targetMovieId}`
+			: "movie";
+	}
 	const idText = `id ${episodeIds.join(", ")}`;
 	if (item && sameNumberSet(episodeIds, item.episodeIds)) {
 		return `${targetDetailText(item)} / ${idText}`;
@@ -61,6 +74,9 @@ export function importTargetText(episodeIds: number[], item?: QueueItem): string
 export function matchesTarget(candidate: ManualImportCandidate, item?: QueueItem): boolean {
 	if (!item) {
 		return false;
+	}
+	if (item.service === "radarr") {
+		return Boolean(item.movieId && candidate.movieId === item.movieId);
 	}
 	const targetIds = new Set(item.episodeIds);
 	const targetAbsoluteNumbers = new Set(item.absoluteEpisodeNumbers);
@@ -96,6 +112,16 @@ export function selectedImportFor(proposal: ResolutionProposal, candidateId: str
 
 export function selectedImportEpisodeIds(proposal: ResolutionProposal): number[] {
 	return [...new Set(proposal.selectedImports.flatMap((selectedImport) => selectedImport.episodeIds))];
+}
+
+export function selectedImportMovieIds(proposal: ResolutionProposal): number[] {
+	return [
+		...new Set(
+			proposal.selectedImports.flatMap((selectedImport) =>
+				selectedImport.movieId ? [selectedImport.movieId] : [],
+			),
+		),
+	];
 }
 
 function canAutoApplyRemovalOptions(options: QueueRemovalOptions): boolean {

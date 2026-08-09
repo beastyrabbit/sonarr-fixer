@@ -31,7 +31,7 @@ export function CandidateSummary({
 				<strong className="truncate">{candidateTitle(candidate)}</strong>
 			</div>
 			<div className="summary-row">
-				<span>Sonarr parsed as</span>
+				<span>{candidate.service === "radarr" ? "Radarr" : "Sonarr"} parsed as</span>
 				<strong className="truncate">
 					{[candidateEpisodeText(candidate), absoluteText(candidate.absoluteEpisodeNumbers)]
 						.filter(Boolean)

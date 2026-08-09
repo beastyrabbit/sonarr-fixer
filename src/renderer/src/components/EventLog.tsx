@@ -7,7 +7,15 @@ export function EventLog({ events }: { events: UiEvent[] }) {
 				<div key={event.key} className={`event ${event.type}`}>
 					<span>{event.timeLabel}</span>
 					<strong>{event.type}</strong>
-					<p>{event.message}</p>
+					<div className="event-content">
+						<p>{event.message}</p>
+						{event.details !== undefined && (
+							<details className="event-details">
+								<summary>structured details</summary>
+								<pre>{JSON.stringify(event.details, null, 2)}</pre>
+							</details>
+						)}
+					</div>
 				</div>
 			))}
 		</div>

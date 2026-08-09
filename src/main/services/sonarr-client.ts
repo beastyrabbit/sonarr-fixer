@@ -330,6 +330,7 @@ function normalizeQueueRecord(record: SonarrQueueRecord): QueueItem {
 
 	return {
 		id: record.id,
+		service: "sonarr",
 		title: record.title ?? record.series?.title ?? `Queue item ${record.id}`,
 		seriesId: record.seriesId ?? record.series?.id,
 		seriesTitle: record.series?.title,
@@ -371,6 +372,7 @@ function normalizeManualImportRecord(record: SonarrManualImportRecord, index: nu
 
 	return {
 		id: `candidate_${index + 1}`,
+		service: "sonarr",
 		path: record.path ?? "",
 		relativePath: record.relativePath,
 		folderName: record.folderName,
@@ -586,6 +588,11 @@ export class SonarrClient {
 		}
 
 		const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+		const languageDowngrades = await this.findGermanAudioDowngrades(normalizedProposal, byId);
+		if (languageDowngrades.length > 0) {
+			return { ok: false, message: languageDowngrades.join(" ") };
+		}
+
 		const files: ManualImportCommandFile[] = normalizedProposal.selectedCandidateIds.map((candidateId) => {
 			const candidate = byId.get(candidateId);
 			if (!candidate) {
@@ -627,6 +634,48 @@ export class SonarrClient {
 				? `Started Sonarr ManualImport command ${command.id}.`
 				: "Started Sonarr ManualImport.",
 		};
+	}
+
+	private async findGermanAudioDowngrades(
+		proposal: ResolutionProposal,
+		candidatesById: Map<string, ManualImportCandidate>,
+	): Promise<string[]> {
+		const hasGerman = (labels: string[]) => labels.some((label) => label.trim().toLowerCase() === "german");
+		const nonGermanImports = proposal.selectedImports.filter((selectedImport) => {
+			const candidate = candidatesById.get(selectedImport.candidateId);
+			return candidate !== undefined && !hasGerman(candidate.languageLabels);
+		});
+		const episodeIds = [...new Set(nonGermanImports.flatMap((selectedImport) => selectedImport.episodeIds))];
+		if (episodeIds.length === 0) {
+			return [];
+		}
+		let episodes: SonarrEpisodeRecord[];
+		try {
+			episodes = await this.getEpisodes({ episodeIds, includeEpisodeFile: true });
+		} catch {
+			// If Sonarr is unreachable the ManualImport command below would fail as well.
+			return [];
+		}
+		const germanFilesByEpisodeId = new Map<number, string>();
+		for (const episode of episodes) {
+			const fileLanguages = (episode.episodeFile?.languages ?? []).map(languageLabel);
+			if (episode.id !== undefined && hasGerman(fileLanguages)) {
+				germanFilesByEpisodeId.set(
+					episode.id,
+					episode.episodeFile?.relativePath ?? episode.episodeFile?.path ?? `episode ${episode.id}`,
+				);
+			}
+		}
+		return nonGermanImports.flatMap((selectedImport) => {
+			const affected = selectedImport.episodeIds.filter((episodeId) => germanFilesByEpisodeId.has(episodeId));
+			if (affected.length === 0) {
+				return [];
+			}
+			const existing = affected.map((episodeId) => germanFilesByEpisodeId.get(episodeId)).join(", ");
+			return [
+				`Blocked language downgrade: candidate ${selectedImport.candidateId} has no German language but would replace German-audio file(s) ${existing}. Import manually in Sonarr if the replacement is intended.`,
+			];
+		});
 	}
 
 	async removeQueueItem(queueItemId: number, options: QueueRemovalOptions): Promise<ApplyResult> {

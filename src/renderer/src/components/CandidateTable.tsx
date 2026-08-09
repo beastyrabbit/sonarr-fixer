@@ -23,13 +23,14 @@ export function CandidateTable({
 }) {
 	const selected = new Set(selectedCandidateIds);
 	const ai = new Set(aiCandidateIds);
+	const serviceName = queueItem?.service === "radarr" ? "Radarr" : "Sonarr";
 	return (
 		<table className="candidate-table">
 			<thead>
 				<tr>
 					<th className="icon-col">Pick</th>
 					<th>File</th>
-					<th>Sonarr parsed as</th>
+					<th>{serviceName} parsed as</th>
 					<th>Signals</th>
 					<th>Size</th>
 				</tr>
@@ -68,7 +69,7 @@ export function CandidateTable({
 							<td>
 								<div className="signal-list">
 									{isAiPick && <span className="tag ai">AI pick</span>}
-									{targetMatch && <span className="tag sonarr">Sonarr target</span>}
+									{targetMatch && <span className="tag sonarr">{serviceName} target</span>}
 									{isSelected && !isAiPick && <span className="tag selected-tag">selected</span>}
 									{candidate.isLikelySample && <span className="tag sample">sample</span>}
 									{candidate.rejections.length > 0 && <span className="tag reject">rejected</span>}

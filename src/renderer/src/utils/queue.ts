@@ -12,6 +12,9 @@ export function targetEpisodeText(item?: QueueItem): string {
 	if (!item) {
 		return "-";
 	}
+	if (item.service === "radarr") {
+		return item.movieTitle ? `${item.movieTitle}${item.movieYear ? ` (${item.movieYear})` : ""}` : item.title;
+	}
 	return item.episodeLabels.join(", ") || item.seasonEpisode || item.title;
 }
 
@@ -28,6 +31,9 @@ export function sonarrIssueText(item: QueueItem): string {
 
 export function sonarrIssueType(item: QueueItem): string {
 	const text = sonarrIssueText(item).toLowerCase();
+	if (text.includes("movie")) {
+		return "movie match";
+	}
 	if (text.includes("unexpected") && text.includes("episode")) {
 		return "unexpected episode";
 	}
@@ -83,5 +89,5 @@ export function uniqueQueueItemsByDownload(items: QueueItem[]): QueueItem[] {
 }
 
 export function itemTitle(item: QueueItem): string {
-	return item.seriesTitle ?? item.title;
+	return item.movieTitle ?? item.seriesTitle ?? item.title;
 }

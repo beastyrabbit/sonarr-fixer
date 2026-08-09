@@ -68,6 +68,9 @@ function normalizeSelectedImports(values: unknown): SelectedImport[] {
 		imports.push({
 			candidateId,
 			episodeIds: normalizeEpisodeIds(record.episodeIds),
+			...(Number.isSafeInteger(Number(record.movieId)) && Number(record.movieId) > 0
+				? { movieId: Number(record.movieId) }
+				: {}),
 			...(reason ? { reason } : {}),
 		});
 	}
@@ -100,7 +103,7 @@ export function normalizeProposal(input: ResolutionProposal): ResolutionProposal
 		selectedImports,
 		sampleCandidateIds: normalizeIdList(input.sampleCandidateIds),
 		reason: String(input.reason ?? "").trim(),
-		sonarrIssueSummary: String(input.sonarrIssueSummary ?? "").trim(),
+		issueSummary: String(input.issueSummary ?? "").trim(),
 		evidence: (input.evidence ?? []).flatMap((item) => {
 			const normalized = String(item);
 			return normalized ? [normalized] : [];
@@ -121,6 +124,15 @@ export function resolveImportEpisodeIds(proposalInput: ResolutionProposal, candi
 	);
 }
 
+export function resolveImportMovieId(
+	proposalInput: ResolutionProposal,
+	candidateId: string,
+): number | undefined {
+	const proposal = normalizeProposal(proposalInput);
+	return proposal.selectedImports.find((selectedImport) => selectedImport.candidateId === candidateId)
+		?.movieId;
+}
+
 export function validateProposalForImport(
 	candidates: ManualImportCandidate[],
 	proposalInput: ResolutionProposal,
@@ -130,6 +142,8 @@ export function validateProposalForImport(
 	const proposal = normalizeProposal(proposalInput);
 	const issues: ValidationIssue[] = [];
 	const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+	const service = queueItem?.service ?? candidates[0]?.service ?? "sonarr";
+	const serviceName = service === "radarr" ? "Radarr" : "Sonarr";
 
 	if (proposal.action !== "import_candidates") {
 		return { ok: true, issues };
@@ -142,7 +156,16 @@ export function validateProposalForImport(
 	if (proposal.selectedImports.length === 0) {
 		issues.push({
 			severity: "error",
-			message: "No explicit import mapping selected. Pi must choose candidate ids and Sonarr episode ids.",
+			message:
+				service === "radarr"
+					? "No explicit import mapping selected. Pi must choose candidate ids and a Radarr movie id."
+					: "No explicit import mapping selected. Pi must choose candidate ids and Sonarr episode ids.",
+		});
+	}
+	if (service === "radarr" && proposal.selectedImports.length > 1) {
+		issues.push({
+			severity: "error",
+			message: "Radarr imports are limited to one feature file per queue item.",
 		});
 	}
 
@@ -156,7 +179,10 @@ export function validateProposalForImport(
 		if (!selectedImportIds.has(candidateId)) {
 			issues.push({
 				severity: "error",
-				message: `Candidate ${candidateId} is selected but has no explicit episode id mapping from Pi.`,
+				message:
+					service === "radarr"
+						? `Candidate ${candidateId} is selected but has no explicit movie id mapping from Pi.`
+						: `Candidate ${candidateId} is selected but has no explicit episode id mapping from Pi.`,
 				candidateId,
 			});
 		}
@@ -168,6 +194,7 @@ export function validateProposalForImport(
 		...allowedEpisodeIdsInput,
 	]);
 	const seenEpisodes = new Set<number>();
+	const seenMovies = new Set<number>();
 	for (const selectedImport of proposal.selectedImports) {
 		const candidate = byId.get(selectedImport.candidateId);
 		if (!candidate) {
@@ -190,12 +217,12 @@ export function validateProposalForImport(
 		if (candidate.rejections.length > 0) {
 			issues.push({
 				severity: "warning",
-				message: `Candidate ${candidate.id} has Sonarr rejections: ${candidate.rejections.join("; ")}`,
+				message: `Candidate ${candidate.id} has ${serviceName} rejections: ${candidate.rejections.join("; ")}`,
 				candidateId: candidate.id,
 			});
 		}
 
-		if (!candidate.seriesId) {
+		if (service === "sonarr" && !candidate.seriesId) {
 			issues.push({
 				severity: "error",
 				message: `Candidate ${candidate.id} has no series id.`,
@@ -219,12 +246,44 @@ export function validateProposalForImport(
 			});
 		}
 
-		if (selectedImport.episodeIds.length === 0) {
+		if (service === "sonarr" && selectedImport.episodeIds.length === 0) {
 			issues.push({
 				severity: "error",
 				message: `Candidate ${candidate.id} has no explicit episode ids selected by Pi.`,
 				candidateId: candidate.id,
 			});
+		}
+
+		if (service === "radarr") {
+			if (!selectedImport.movieId) {
+				issues.push({
+					severity: "error",
+					message: `Candidate ${candidate.id} has no explicit movie id selected by Pi.`,
+					candidateId: candidate.id,
+				});
+			} else {
+				const allowedMovieIds = new Set(
+					[queueItem?.movieId, ...candidates.map((item) => item.movieId)].filter(
+						(value): value is number => typeof value === "number",
+					),
+				);
+				if (allowedMovieIds.size > 0 && !allowedMovieIds.has(selectedImport.movieId)) {
+					issues.push({
+						severity: "error",
+						message: `Movie id ${selectedImport.movieId} is not present in the Radarr queue or manual import context.`,
+						candidateId: candidate.id,
+					});
+				}
+				if (seenMovies.has(selectedImport.movieId)) {
+					issues.push({
+						severity: "error",
+						message: `Movie id ${selectedImport.movieId} is selected more than once.`,
+						candidateId: candidate.id,
+					});
+				}
+				seenMovies.add(selectedImport.movieId);
+			}
+			continue;
 		}
 
 		for (const episodeId of selectedImport.episodeIds) {
